@@ -155,6 +155,7 @@ Examples:
 - `Skill.cpp` shared helper behavior belongs under shared GW context/type code, not as a fake manager
 - `Effect` and `SkillbarSkill` helper methods belong under shared GW context/type code, not inside `EffectMgr`
 - `WorldContext` layout belongs under shared GW context code, not inside a manager implementation
+- shared GW container types such as `GwArray` belong under shared GW context/type code, not at the top of `GW/`
 
 Important:
 

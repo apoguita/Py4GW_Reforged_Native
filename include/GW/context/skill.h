@@ -2,7 +2,7 @@
 
 #include "base/error_handling.h"
 
-#include "GW/gw_array.h"
+#include "GW/context/gw_array.h"
 
 #include <cstddef>
 #include <cstdint>

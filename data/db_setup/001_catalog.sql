@@ -1,4 +1,0 @@
-CREATE TABLE IF NOT EXISTS databases (
-    name TEXT PRIMARY KEY,
-    path TEXT NOT NULL
-);
