@@ -3,267 +3,399 @@
 #include "GW/map/map.h"
 
 #include "base/CrashHandler.h"
+#include "base/hooker.h"
 #include "base/logger.h"
 #include "base/memory_patcher.h"
-#include "base/patterns.h"
-#include "base/scanner.h"
-
-namespace {
-
-struct MapDimensions {
-    uint32_t unk;
-    uint32_t start_x;
-    uint32_t start_y;
-    uint32_t end_x;
-    uint32_t end_y;
-    uint32_t unk1;
-};
-
-struct InstanceInfo {
-    MapDimensions* terrain_info1;
-    GW::Constants::InstanceType instance_type;
-    GW::Context::AreaInfo* current_map_info;
-    uint32_t terrain_count;
-    MapDimensions* terrain_info2;
-};
-
-InstanceInfo* g_instance_info = nullptr;
-PY4GW::MemoryPatcher g_bypass_tolerance_patch;
-
-bool ResolveSkipCinematic() {
-    CrashContextScope context("startup", "map", "resolve_skip_cinematic");
-    const auto* pattern = PY4GW::Patterns::Get("map.skip_cinematic");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.skip_cinematic", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    GW::map::g_skip_cinematic_func = reinterpret_cast<GW::map::VoidFn>(address);
-    return Logger::AssertAddress("SkipCinematic_Func", reinterpret_cast<uintptr_t>(GW::map::g_skip_cinematic_func), "map");
-}
-
-bool ResolveRegionId() {
-    CrashContextScope context("startup", "map", "resolve_region_id");
-    const auto* pattern = PY4GW::Patterns::Get("map.region_id_ref");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.region_id_ref", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("RegionId_Ref", address, "map")) {
-        return false;
-    }
-    const uintptr_t candidate = *reinterpret_cast<const uintptr_t*>(address);
-    if (!Logger::AssertAddress("RegionId_Ptr", candidate, "map")) {
-        return false;
-    }
-    GW::map::g_region_id_addr = reinterpret_cast<GW::Constants::ServerRegion*>(candidate);
-    return true;
-}
-
-bool ResolveAreaInfo() {
-    CrashContextScope context("startup", "map", "resolve_area_info");
-    const auto* pattern = PY4GW::Patterns::Get("map.area_info_ref");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.area_info_ref", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("AreaInfo_Ref", address, "map")) {
-        return false;
-    }
-
-    const uintptr_t candidate = *reinterpret_cast<const uintptr_t*>(address);
-    if (!Logger::AssertAddress("AreaInfo_Ptr", candidate, "map")) {
-        return false;
-    }
-    if (!PY4GW::Scanner::IsValidPtr(candidate, PY4GW::ScannerSection::RData)) {
-        Logger::Instance().LogError("Area info pointer is outside the expected rdata section.", "map");
-        return false;
-    }
-
-    GW::map::g_area_info_addr = reinterpret_cast<GW::Context::AreaInfo*>(candidate);
-    return true;
-}
-
-bool ResolveInstanceInfo() {
-    CrashContextScope context("startup", "map", "resolve_instance_info");
-    const auto* pattern = PY4GW::Patterns::Get("map.instance_info_ref");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.instance_info_ref", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("InstanceInfo_Ref", address, "map")) {
-        return false;
-    }
-
-    const uintptr_t candidate = *reinterpret_cast<const uintptr_t*>(address);
-    if (!Logger::AssertAddress("InstanceInfo_Ptr", candidate, "map")) {
-        return false;
-    }
-
-    g_instance_info = reinterpret_cast<InstanceInfo*>(candidate);
-    GW::map::g_instance_info_ptr = address;
-    return true;
-}
-
-bool ResolveQueryAltitude() {
-    CrashContextScope context("startup", "map", "resolve_query_altitude");
-    const auto* pattern = PY4GW::Patterns::Get("map.query_altitude_callsite");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.query_altitude_callsite", "map");
-        return false;
-    }
-
-    const uintptr_t callsite = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("QueryAltitude_Callsite", callsite, "map")) {
-        return false;
-    }
-
-    GW::map::g_query_altitude_func = reinterpret_cast<GW::map::QueryAltitudeFn>(
-        PY4GW::Scanner::FunctionFromNearCall(callsite));
-    return Logger::AssertAddress("QueryAltitude_Func", reinterpret_cast<uintptr_t>(GW::map::g_query_altitude_func), "map");
-}
-
-bool ResolveBypassTolerancePatch() {
-    CrashContextScope context("startup", "map", "resolve_bypass_tolerance_patch");
-    const auto* pattern = PY4GW::Patterns::Get("map.bypass_tolerance_patch");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.bypass_tolerance_patch", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("BypassTolerancePatch_Addr", address, "map")) {
-        return false;
-    }
-
-    static constexpr char patch[] = "\xEB";
-    g_bypass_tolerance_patch.SetPatch(address, patch, 1);
-    return g_bypass_tolerance_patch.IsValid();
-}
-
-bool ResolveEnterChallengeFunctions() {
-    CrashContextScope context("startup", "map", "resolve_enter_challenge_functions");
-    const auto* pattern = PY4GW::Patterns::Get("map.enter_challenge_anchor");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.enter_challenge_anchor", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("EnterChallenge_Anchor", address, "map")) {
-        return false;
-    }
-
-    GW::map::g_cancel_enter_challenge_mission_func = reinterpret_cast<GW::map::VoidFn>(
-        PY4GW::Scanner::FunctionFromNearCall(address + 0x1B));
-    return Logger::AssertAddress(
-        "CancelEnterChallengeMission_Func",
-        reinterpret_cast<uintptr_t>(GW::map::g_cancel_enter_challenge_mission_func),
-        "map");
-}
-
-bool ResolveMapTypeInstanceInfos() {
-    CrashContextScope context("startup", "map", "resolve_map_type_instance_infos");
-    const auto* pattern = PY4GW::Patterns::Get("map.map_type_instance_infos_ref");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: map.map_type_instance_infos_ref", "map");
-        return false;
-    }
-
-    const uintptr_t address = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("MapTypeInstanceInfos_Anchor", address, "map")) {
-        return false;
-    }
-
-    GW::map::g_map_type_instance_infos_size = (*reinterpret_cast<const uint32_t*>(address + 5)) / sizeof(GW::map::MapTypeInstanceInfo);
-    const uintptr_t candidate = *reinterpret_cast<const uintptr_t*>(address + 0x1A);
-    if (!Logger::AssertAddress("MapTypeInstanceInfos_Ptr", candidate, "map")) {
-        return false;
-    }
-
-    GW::map::g_map_type_instance_infos = reinterpret_cast<GW::map::MapTypeInstanceInfo*>(candidate);
-    return true;
-}
-
-bool Init() {
-    CrashContextScope context("startup", "map", "init");
-    return ResolveSkipCinematic() &&
-        ResolveRegionId() &&
-        ResolveAreaInfo() &&
-        ResolveInstanceInfo() &&
-        ResolveQueryAltitude() &&
-        ResolveBypassTolerancePatch() &&
-        ResolveEnterChallengeFunctions() &&
-        ResolveMapTypeInstanceInfos();
-}
-
-void Exit() {
-    CrashContextScope context("shutdown", "map", "exit");
-    g_bypass_tolerance_patch.TogglePatch(false);
-    g_bypass_tolerance_patch.Reset();
-    g_instance_info = nullptr;
-    GW::map::g_skip_cinematic_func = nullptr;
-    GW::map::g_cancel_enter_challenge_mission_func = nullptr;
-    GW::map::g_query_altitude_func = nullptr;
-    GW::map::g_region_id_addr = nullptr;
-    GW::map::g_area_info_addr = nullptr;
-    GW::map::g_map_type_instance_infos = nullptr;
-    GW::map::g_map_type_instance_infos_size = 0;
-    GW::map::g_instance_info_ptr = 0;
-}
-
-}  // namespace
+#include "GW/game_thread/game_thread.h"
+#include "GW/ui/ui.h"
 
 namespace GW::map {
 
 QueryAltitudeFn g_query_altitude_func = nullptr;
 VoidFn g_skip_cinematic_func = nullptr;
 VoidFn g_cancel_enter_challenge_mission_func = nullptr;
+DoActionFn g_enter_challenge_mission_func = nullptr;
+DoActionFn g_enter_challenge_mission_original = nullptr;
 GW::Constants::ServerRegion* g_region_id_addr = nullptr;
 Context::AreaInfo* g_area_info_addr = nullptr;
 MapTypeInstanceInfo* g_map_type_instance_infos = nullptr;
 uint32_t g_map_type_instance_infos_size = 0;
 uintptr_t g_instance_info_ptr = 0;
+InstanceInfo* g_instance_info = nullptr;
+PY4GW::MemoryPatcher g_bypass_tolerance_patch;
+PY4GW::HookEntry g_enter_challenge_mission_hook_entry;
 std::atomic<bool> g_initialized = false;
+
+WorldMapContext* g_world_map_context = nullptr;
+MissionMapContext* g_mission_map_context = nullptr;
+MapTestState g_map_test_state;
+
+namespace {
+    ui::UIInteractionCallback world_map_ui_callback_func = nullptr;
+    ui::UIInteractionCallback world_map_ui_callback_ret = nullptr;
+
+    void OnWorldMap_UICallback(ui::InteractionMessage* message, void* wParam, void* lParam) {
+        world_map_ui_callback_ret(message, wParam, lParam);
+        if (message && message->wParam) {
+            g_world_map_context = *reinterpret_cast<WorldMapContext**>(message->wParam);
+        }
+        if (message && message->message_id == ui::UIMessage::kDestroyFrame) {
+            g_world_map_context = nullptr;
+        }
+    }
+
+    ui::UIInteractionCallback mission_map_ui_callback_func = nullptr;
+    ui::UIInteractionCallback mission_map_ui_callback_ret = nullptr;
+
+    void OnMissionMap_UICallback(ui::InteractionMessage* message, void* wParam, void* lParam) {
+        mission_map_ui_callback_ret(message, wParam, lParam);
+        if (message && message->wParam) {
+            g_mission_map_context = *reinterpret_cast<MissionMapContext**>(message->wParam);
+        }
+        if (message && message->message_id == ui::UIMessage::kDestroyFrame) {
+            g_mission_map_context = nullptr;
+        }
+    }
+
+    static constexpr uint32_t kMtIdle = 0;
+    static constexpr uint32_t kMtWait0 = 1;
+    static constexpr uint32_t kMtWait1 = 2;
+    static constexpr uint32_t kMtRun = 3;
+    static constexpr uint32_t kMtWait2 = 4;
+    static constexpr uint32_t kMtDone = 5;
+    static constexpr uint32_t kMtStop = 6;
+
+    PY4GW::HookEntry mt_ui_entry;
+    PY4GW::HookEntry mt_tick_entry;
+
+    void mt_set(uint32_t phase, const char* status_text) {
+        g_map_test_state.phase = phase;
+        g_map_test_state.status = status_text;
+    }
+
+    bool mt_loading() {
+        return GW::map::GetInstanceType() == GW::Constants::InstanceType::Loading;
+    }
+
+    bool SendTravelPacket(uint32_t map_id, uint32_t region, int district_number, uint32_t language) {
+        struct MapStruct {
+            uint32_t map_id;
+            uint32_t region;
+            uint32_t language;
+            int district_number;
+        } packet;
+        packet.map_id = map_id;
+        packet.region = region;
+        packet.language = language;
+        packet.district_number = district_number;
+        return ui::SendUIMessage(ui::UIMessage::kTravel, &packet);
+    }
+
+    void mt_step1() {
+        for (uint32_t i = 0; i < g_map_test_state.count; ++i) {
+            SendTravelPacket(g_map_test_state.alt_map_id, 0, g_map_test_state.number, 0);
+        }
+        g_map_test_state.t1 = GetTickCount64();
+        g_map_test_state.t2 = 0;
+        g_map_test_state.seen = false;
+        mt_set(kMtRun, "run");
+    }
+
+    void mt_step0() {
+        g_map_test_state.tries += 1;
+        g_map_test_state.t0 = 0;
+        g_map_test_state.t1 = 0;
+        g_map_test_state.t2 = 0;
+        g_map_test_state.seen = false;
+        SendTravelPacket(
+            g_map_test_state.map_id,
+            static_cast<uint32_t>(GW::map::GetRegion()),
+            0,
+            static_cast<uint32_t>(GW::map::GetLanguage()));
+        mt_set(kMtWait0, "wait0");
+    }
+
+    bool mt_read(uint32_t message_id, void* wparam, uint32_t* out_map_id) {
+        if (!wparam || !out_map_id) {
+            return false;
+        }
+        if (message_id == static_cast<uint32_t>(ui::UIMessage::kLoadMapContext)) {
+            if (IsBadReadPtr(wparam, 8)) {
+                return false;
+            }
+            *out_map_id = *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(wparam) + 4);
+            return true;
+        }
+        if (message_id == static_cast<uint32_t>(ui::UIMessage::kStartMapLoad)) {
+            if (IsBadReadPtr(wparam, 4)) {
+                return false;
+            }
+            *out_map_id = *reinterpret_cast<uint32_t*>(wparam);
+            return true;
+        }
+        return false;
+    }
+
+    bool mt_match(uint32_t message_id) {
+        const uint32_t configured = g_map_test_state.message_id;
+        if (message_id == configured) {
+            return true;
+        }
+        return configured == static_cast<uint32_t>(ui::UIMessage::kStartMapLoad)
+            && message_id == static_cast<uint32_t>(ui::UIMessage::kLoadMapContext);
+    }
+
+    void OnMapTestUIMessage(PY4GW::HookStatus* status, ui::UIMessage message_id, void* wparam, void*) {
+        const uint32_t msg = static_cast<uint32_t>(message_id);
+        if (status->blocked || !g_map_test_state.active) {
+            return;
+        }
+        if (!mt_match(msg)) {
+            return;
+        }
+        if (g_map_test_state.phase != kMtWait0) {
+            return;
+        }
+
+        uint32_t anchor_map_id = 0;
+        if (!mt_read(msg, wparam, &anchor_map_id)) {
+            return;
+        }
+        if (anchor_map_id != g_map_test_state.map_id) {
+            return;
+        }
+
+        g_map_test_state.t0 = GetTickCount64();
+        mt_set(kMtWait1, "wait1");
+    }
+
+    void OnMapTestTick(PY4GW::HookStatus*) {
+        if (!g_map_test_state.active) {
+            return;
+        }
+
+        const uint64_t now = GetTickCount64();
+        switch (g_map_test_state.phase) {
+        case kMtWait1:
+            if (now - g_map_test_state.t0 < g_map_test_state.delay_ms) {
+                return;
+            }
+            mt_step1();
+            return;
+        case kMtRun: {
+            const uint32_t current_map = static_cast<uint32_t>(GW::map::GetMapID());
+            const bool is_loading = mt_loading();
+            if (current_map == g_map_test_state.map_id && !is_loading) {
+                g_map_test_state.seen = true;
+            }
+            if (current_map != g_map_test_state.map_id && !is_loading) {
+                g_map_test_state.t2 = 0;
+                mt_set(kMtWait2, "wait2");
+                return;
+            }
+            if (now - g_map_test_state.t1 <= g_map_test_state.timeout_ms) {
+                return;
+            }
+            if (g_map_test_state.seen && current_map == g_map_test_state.map_id && !is_loading) {
+                g_map_test_state.active = false;
+                mt_set(kMtDone, "done");
+                return;
+            }
+            g_map_test_state.t2 = 0;
+            mt_set(kMtWait2, "wait2");
+            return;
+        }
+        case kMtWait2:
+            if (mt_loading()) {
+                return;
+            }
+            if (!g_map_test_state.t2) {
+                g_map_test_state.t2 = now;
+                return;
+            }
+            if (now - g_map_test_state.t2 < 100) {
+                return;
+            }
+            mt_step0();
+            return;
+        default:
+            return;
+        }
+    }
+
+    bool ResolveMissionMapUICallback() {
+        CrashContextScope context("startup", "map", "resolve_mission_map_ui_callback");
+        const auto* pattern = PY4GW::Patterns::Get("map.mission_map_ui_callback");
+        if (!pattern) {
+            Logger::Instance().LogError("Missing or invalid pattern: map.mission_map_ui_callback", "map");
+            return false;
+        }
+        const uintptr_t address = PY4GW::Scanner::Find(
+            pattern->pattern.c_str(),
+            pattern->mask.c_str(),
+            pattern->offset,
+            pattern->section);
+        mission_map_ui_callback_func = reinterpret_cast<ui::UIInteractionCallback>(
+            PY4GW::Scanner::ToFunctionStart(address));
+        return Logger::AssertAddress(
+            "MissionMap_UICallback_Func",
+            reinterpret_cast<uintptr_t>(mission_map_ui_callback_func),
+            "map");
+    }
+
+    bool ResolveWorldMapUICallback() {
+        CrashContextScope context("startup", "map", "resolve_world_map_ui_callback");
+        const auto* pattern = PY4GW::Patterns::Get("map.world_map_ui_callback");
+        if (!pattern) {
+            Logger::Instance().LogError("Missing or invalid pattern: map.world_map_ui_callback", "map");
+            return false;
+        }
+        const uintptr_t address = PY4GW::Scanner::Find(
+            pattern->pattern.c_str(),
+            pattern->mask.c_str(),
+            pattern->offset,
+            pattern->section);
+        world_map_ui_callback_func = reinterpret_cast<ui::UIInteractionCallback>(
+            PY4GW::Scanner::ToFunctionStart(address));
+        return Logger::AssertAddress(
+            "WorldMap_UICallback_Func",
+            reinterpret_cast<uintptr_t>(world_map_ui_callback_func),
+            "map");
+    }
+}  // namespace
+
+void OnEnterChallengeMission_Hook(uint32_t identifier) {
+    PY4GW::HookBase::EnterHook();
+    ui::SendUIMessage(ui::UIMessage::kSendEnterMission, reinterpret_cast<void*>(static_cast<uintptr_t>(identifier)));
+    PY4GW::HookBase::LeaveHook();
+}
+
+void OnEnterChallengeMission_UIMessage(PY4GW::HookStatus* status, ui::UIMessage msg_id, void* wparam, void*) {
+    if (status && status->blocked) {
+        return;
+    }
+    if (g_enter_challenge_mission_original && wparam) {
+        g_enter_challenge_mission_original(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(wparam)));
+    }
+}
+
+void MapTestStep0() {
+    mt_step0();
+}
+
+void MapTestSetPhase(uint32_t phase, const char* status_text) {
+    mt_set(phase, status_text);
+}
+
+bool Init() {
+    CrashContextScope context("startup", "map", "init");
+    if (!(ResolveSkipCinematic() &&
+        ResolveRegionId() &&
+        ResolveAreaInfo() &&
+        ResolveInstanceInfo() &&
+        ResolveQueryAltitude() &&
+        ResolveBypassTolerancePatch() &&
+        ResolveEnterChallengeFunctions() &&
+        ResolveMapTypeInstanceInfos() &&
+        ResolveMissionMapUICallback() &&
+        ResolveWorldMapUICallback())) {
+        return false;
+    }
+
+    if (g_enter_challenge_mission_func) {
+        PY4GW::HookBase::CreateHook(
+            reinterpret_cast<void**>(&g_enter_challenge_mission_func),
+            reinterpret_cast<void*>(&OnEnterChallengeMission_Hook),
+            reinterpret_cast<void**>(&g_enter_challenge_mission_original));
+        ui::RegisterUIMessageCallback(
+            &g_enter_challenge_mission_hook_entry,
+            ui::UIMessage::kSendEnterMission,
+            OnEnterChallengeMission_UIMessage,
+            0x1);
+    }
+
+    return true;
+}
+
+void EnableHooks() {
+    if (world_map_ui_callback_func) {
+        PY4GW::HookBase::CreateHook(
+            reinterpret_cast<void**>(&world_map_ui_callback_func),
+            reinterpret_cast<void*>(&OnWorldMap_UICallback),
+            reinterpret_cast<void**>(&world_map_ui_callback_ret));
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(world_map_ui_callback_func));
+    }
+    if (mission_map_ui_callback_func) {
+        PY4GW::HookBase::CreateHook(
+            reinterpret_cast<void**>(&mission_map_ui_callback_func),
+            reinterpret_cast<void*>(&OnMissionMap_UICallback),
+            reinterpret_cast<void**>(&mission_map_ui_callback_ret));
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(mission_map_ui_callback_func));
+    }
+    ui::RegisterUIMessageCallback(&mt_ui_entry, ui::UIMessage::kLoadMapContext, OnMapTestUIMessage, 0x1);
+    ui::RegisterUIMessageCallback(&mt_ui_entry, ui::UIMessage::kStartMapLoad, OnMapTestUIMessage, 0x1);
+    game_thread::RegisterGameThreadCallback(&mt_tick_entry, OnMapTestTick, 0x1);
+    if (g_enter_challenge_mission_func) {
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_enter_challenge_mission_func));
+    }
+    if (g_bypass_tolerance_patch.IsValid()) {
+        g_bypass_tolerance_patch.TogglePatch(true);
+    }
+}
+
+void DisableHooks() {
+    if (world_map_ui_callback_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(world_map_ui_callback_func));
+    }
+    if (mission_map_ui_callback_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(mission_map_ui_callback_func));
+    }
+    ui::RemoveUIMessageCallback(&mt_ui_entry, ui::UIMessage::kLoadMapContext);
+    ui::RemoveUIMessageCallback(&mt_ui_entry, ui::UIMessage::kStartMapLoad);
+    game_thread::RemoveGameThreadCallback(&mt_tick_entry);
+    if (g_enter_challenge_mission_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_enter_challenge_mission_func));
+    }
+    if (g_bypass_tolerance_patch.IsValid()) {
+        g_bypass_tolerance_patch.TogglePatch(false);
+    }
+}
+
+void Exit() {
+    CrashContextScope context("shutdown", "map", "exit");
+    ui::RemoveUIMessageCallback(&mt_ui_entry, ui::UIMessage::kLoadMapContext);
+    ui::RemoveUIMessageCallback(&mt_ui_entry, ui::UIMessage::kStartMapLoad);
+    ui::RemoveUIMessageCallback(&g_enter_challenge_mission_hook_entry, ui::UIMessage::kSendEnterMission);
+    game_thread::RemoveGameThreadCallback(&mt_tick_entry);
+    if (world_map_ui_callback_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(world_map_ui_callback_func));
+    }
+    if (mission_map_ui_callback_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(mission_map_ui_callback_func));
+    }
+    if (g_enter_challenge_mission_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_enter_challenge_mission_func));
+    }
+    g_bypass_tolerance_patch.TogglePatch(false);
+    g_bypass_tolerance_patch.Reset();
+    world_map_ui_callback_func = nullptr;
+    world_map_ui_callback_ret = nullptr;
+    mission_map_ui_callback_func = nullptr;
+    mission_map_ui_callback_ret = nullptr;
+    g_world_map_context = nullptr;
+    g_mission_map_context = nullptr;
+    g_instance_info = nullptr;
+    g_skip_cinematic_func = nullptr;
+    g_cancel_enter_challenge_mission_func = nullptr;
+    g_enter_challenge_mission_func = nullptr;
+    g_enter_challenge_mission_original = nullptr;
+    g_query_altitude_func = nullptr;
+    g_region_id_addr = nullptr;
+    g_area_info_addr = nullptr;
+    g_map_type_instance_infos = nullptr;
+    g_map_type_instance_infos_size = 0;
+    g_instance_info_ptr = 0;
+}
 
 bool Initialize() {
     CrashContextScope context("startup", "map", "initialize");
@@ -279,9 +411,7 @@ bool Initialize() {
         return false;
     }
 
-    if (g_bypass_tolerance_patch.IsValid()) {
-        g_bypass_tolerance_patch.TogglePatch(true);
-    }
+    EnableHooks();
     g_initialized = true;
     return true;
 }
@@ -292,6 +422,7 @@ void Shutdown() {
         return;
     }
 
+    DisableHooks();
     Exit();
     g_initialized = false;
 }

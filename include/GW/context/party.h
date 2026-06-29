@@ -43,7 +43,7 @@ namespace GW::Context {
 
     struct PartyInfo { // total: 0x84/132
 
-        size_t GetPartySize() {
+        size_t GetPartySize() const {
             return players.size() + henchmen.size() + heroes.size();
         }
 

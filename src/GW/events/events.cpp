@@ -8,23 +8,28 @@
 #include "base/patterns.h"
 #include "base/scanner.h"
 
-namespace {
+namespace GW::events {
+
+SendEventMessageFn g_send_event_message_func = nullptr;
+SendEventMessageFn g_send_event_message_original = nullptr;
+std::unordered_map<EventID, std::vector<CallbackEntry>> g_callbacks;
+std::atomic<bool> g_initialized = false;
 
 uint32_t __cdecl OnSendEventMessage(
     void* event_context,
     uint32_t unk1,
-    GW::events::EventID event_id,
+    EventID event_id,
     void* data_buffer,
     uint32_t data_length) {
     PY4GW::HookBase::EnterHook();
     PY4GW::HookStatus status = {};
     uint32_t result = 1;
 
-    auto found = GW::events::g_callbacks.find(event_id);
-    if (found == GW::events::g_callbacks.end()) {
+    auto found = g_callbacks.find(event_id);
+    if (found == g_callbacks.end()) {
         PY4GW::HookBase::LeaveHook();
-        return GW::events::g_send_event_message_original
-            ? GW::events::g_send_event_message_original(event_context, unk1, event_id, data_buffer, data_length)
+        return g_send_event_message_original
+            ? g_send_event_message_original(event_context, unk1, event_id, data_buffer, data_length)
             : result;
     }
 
@@ -39,8 +44,8 @@ uint32_t __cdecl OnSendEventMessage(
         ++it;
     }
 
-    if (!status.blocked && GW::events::g_send_event_message_original) {
-        result = GW::events::g_send_event_message_original(event_context, unk1, event_id, data_buffer, data_length);
+    if (!status.blocked && g_send_event_message_original) {
+        result = g_send_event_message_original(event_context, unk1, event_id, data_buffer, data_length);
     }
 
     while (it != end) {
@@ -53,31 +58,6 @@ uint32_t __cdecl OnSendEventMessage(
     return result;
 }
 
-bool ResolveSendEventMessageTarget() {
-    CrashContextScope context("startup", "events", "resolve_send_event_message_target");
-    const auto* pattern = PY4GW::Patterns::Get("events.send_event_message_callsite");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: events.send_event_message_callsite", "events");
-        return false;
-    }
-
-    const uintptr_t callsite = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("SendEventMessage_Callsite", callsite, "events")) {
-        return false;
-    }
-
-    GW::events::g_send_event_message_func = reinterpret_cast<GW::events::SendEventMessageFn>(
-        PY4GW::Scanner::FunctionFromNearCall(callsite));
-    return Logger::AssertAddress(
-        "SendEventMessage_Func",
-        reinterpret_cast<uintptr_t>(GW::events::g_send_event_message_func),
-        "events");
-}
-
 bool Init() {
     CrashContextScope context("startup", "events", "init");
     if (!ResolveSendEventMessageTarget()) {
@@ -85,9 +65,9 @@ bool Init() {
     }
 
     const int status = PY4GW::HookBase::CreateHook(
-        reinterpret_cast<void**>(&GW::events::g_send_event_message_func),
+        reinterpret_cast<void**>(&g_send_event_message_func),
         reinterpret_cast<void*>(&OnSendEventMessage),
-        reinterpret_cast<void**>(&GW::events::g_send_event_message_original));
+        reinterpret_cast<void**>(&g_send_event_message_original));
     return Logger::AssertHook("SendEventMessage_Func", status, "events");
 }
 
@@ -99,25 +79,21 @@ void EnableHooks() {
 
 void DisableHooks() {
     CrashContextScope context("shutdown", "events", "disable_hooks");
-    if (GW::events::g_send_event_message_func) {
-        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(GW::events::g_send_event_message_func));
+    if (g_send_event_message_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_send_event_message_func));
     }
 }
 
 void Exit() {
     CrashContextScope context("shutdown", "events", "exit");
-    if (GW::events::g_send_event_message_func) {
-        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(GW::events::g_send_event_message_func));
+    if (g_send_event_message_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_send_event_message_func));
     }
 
-    GW::events::g_send_event_message_func = nullptr;
-    GW::events::g_send_event_message_original = nullptr;
-    GW::events::g_callbacks.clear();
+    g_send_event_message_func = nullptr;
+    g_send_event_message_original = nullptr;
+    g_callbacks.clear();
 }
-
-}  // namespace
-
-namespace GW::events {
 
 bool Initialize() {
     CrashContextScope context("startup", "events", "initialize");

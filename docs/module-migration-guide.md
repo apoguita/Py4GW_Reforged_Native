@@ -71,14 +71,15 @@ Observed baseline modules for this rule:
 Observed baseline after cleanup:
 
 - shared GW structs and helpers live under `GW/context/` instead of being embedded into whichever manager needed them first
-- types, structs, and public callable declarations belong in the main module header
+- types, structs, public callable declarations, resolver declarations, hook callback declarations, packet helper structs, and module-owned base declarations belong in the main module header
 - internal-only declarations stay in `.cpp` unless they need named shared ownership in a dedicated header
 
 Strict interpretation for future migrations:
 
 - do not invent arbitrary split shapes
 - keep the split explicit and role-based
-- use the main header for declarations
+- use the main header for declarations and module-owned base
+- treat every pattern-resolved symbol, offset, assertion-owned anchor, pointer scan, callsite scan, and patch site as part of the module-owned base
 - do not add a `*_methods.h` layer
 - only create additional headers beyond that when an existing documented subsystem-specific rule already requires them
 
@@ -89,13 +90,15 @@ For a migrated Guild Wars module, use this as the default layout.
 Default manager split:
 
 - `include/GW/<module>/<module>.h`
-  All public declarations:
-  lifecycle declarations, structs, typedefs, function-pointer aliases, enums, callback types, globals, and callable declarations.
+  All module-owned base declarations:
+  lifecycle declarations, public callable declarations, structs, typedefs, function-pointer aliases, enums, callback types, globals, packet helper structs, resolver declarations, hook callback declarations, and the manager's assertion-owned symbol surface.
+  This includes named ownership for every pattern-resolved function, offset, anchor, pointer reference, callsite, and patch site used by the module.
+  Resolver logic itself belongs here too. If the module owns the resolution path, the resolver body is part of the header-owned base and should not be left only in the `.cpp`.
 - `src/GW/<module>/<module>.cpp`
-  Internal implementation:
-  pointer resolution, pattern scans, hook setup, patch setup, lifecycle orchestration, trampolines, and internal-only helpers.
+  Implementations for the manager-owned base declarations:
+  internal functions, hook setup, patch setup, lifecycle orchestration, trampolines, and non-accessor implementation bodies that are not resolver definitions.
 - `src/GW/<module>/<module>_methods.cpp`
-  Definitions for callable public methods when that split is useful.
+  Definitions for callable public accessors and operations declared in the main module header.
 
 This is the actual current pattern used by:
 
@@ -124,7 +127,9 @@ Important limit:
 - do not use `_methods` files for enums, typedefs, callback signatures, globals, structs, or other declarations
 - if the module only exposes lifecycle and no real public callable surface, do not force methods files into existence
 - if the module does expose callable accessors or operations, declare them in `<module>.h`
-- do not declare module-local types, function pointer aliases, or module state directly inside anonymous `.cpp` scope just to avoid creating the right header split
+- do not declare module-local types, function pointer aliases, resolver declarations, hook declarations, packet helper structs, or module state directly inside anonymous `.cpp` scope just to avoid creating the right header split
+- do not leave resolver bodies in `<module>.cpp` when the module owns those resolution steps
+- do not leave a pattern-resolved symbol as unnamed `.cpp`-local scan logic when that symbol is part of the manager's owned runtime surface
 - if a module needs extra declarations that are not public API and are not runtime methods, create an appropriate dedicated header for that module instead of burying them in the `.cpp`
 - do not create many small files for a tiny manager unless an existing repo baseline for that exact subsystem already requires it
 - do not split a manager just because another older migrated file already happens to be split
@@ -135,6 +140,8 @@ Keep responsibilities separated consistently:
 
 - `<module>.cpp` owns discovery and setup
 - `<module>.cpp` owns internal-only helpers and private implementation details
+- `<module>.h` owns resolver definitions, including the scan logic and assertions for module-owned symbols
+- `<module>.cpp` may call those resolver definitions during setup, but should not be the only place they exist
 - `<module>_methods.cpp` owns public callable definitions when that split exists
 - additional implementation files only exist when a documented subsystem-specific split already requires them
 
@@ -149,6 +156,8 @@ Important clarification:
 - "method" in these docs does not only mean class member syntax
 - free functions in a module namespace still count as methods for file-placement purposes when they are part of the public callable surface
 - the placement rule is determined by call-surface ownership, not by whether the function looks small, looks like an accessor, or happens to live in a `.cpp` today
+- pattern resolution ownership is determined the same way: if the module owns the resolved symbol, the declaration of that ownership belongs in the module header even though the actual scan executes in the `.cpp`
+  This project now requires the stronger form: the resolver body itself also belongs in the module header, typically as `inline`.
 
 That split does not authorize creating extra headers beyond the documented roles.
 
@@ -172,7 +181,7 @@ Context must not be omitted when making that decision:
 
 - shared GW declarations used across managers belong under `GW/context/` when they are part of shared GW context/type code
 - module-specific declarations belong under that module's header split
-- `.cpp` files should primarily contain function bodies, not the module's structural declarations
+- `.cpp` files should primarily contain function bodies that implement the structural declarations established in the header
 - header placement decisions must be made explicitly before editing, not inferred afterward from what compiles
 
 Observed baseline from current repo:
@@ -220,6 +229,20 @@ Examples of code that does not belong in anonymous `.cpp` scope:
 - callback entry structs
 - exported or shared module globals
 - state declarations that deserve named ownership and reviewable structure
+- packet or UI-message helper structs used across the module
+- resolver declarations and hook callback declarations used across the module
+- unnamed `Patterns::Get(...)` fetches for manager-owned symbols
+- unnamed assertion-owned scan anchors for manager-owned symbols
+- unnamed direct statement blocks that resolve offsets or callsites without a matching header-declared ownership point
+
+Required explicitness for resolved symbols:
+
+- if the module resolves `SendAgentDialog_Func`, `CameraPtr`, `AgentArrayPtr`, or any equivalent symbol, that symbol's ownership must be visible from the module header through a named declaration surface
+- the `.cpp` may execute `Patterns::Get(...)`, `Find(...)`, `FindAssertion(...)`, `ToFunctionStart(...)`, `FunctionFromNearCall(...)`, pointer dereferences, and address assertions
+- but the existence of that resolution path must not be discoverable only by reading the `.cpp`
+- header review should make it obvious which manager-owned symbols exist and which resolver functions own them
+- do not hide assertion-backed or pattern-backed resolution behind anonymous `.cpp` blocks
+- do not hide resolver bodies in `.cpp` when parity requires the header to carry the manager-owned base
 
 Examples of modules that should usually stay with declarations in a single header:
 
@@ -407,6 +430,15 @@ Important reinforcement:
 - if a call site uses `FindInRange(...)`, the byte pattern and mask should still come from `Patterns::Get(...)`
 - if a call site uses `FindAssertion(...)`, the assertion file and assertion message should still come from `Patterns::Get(...)`
 - the call site still owns scan windows, control flow, and semantic meaning
+
+Explicit declaration rule for pattern resolution:
+
+- whenever a module resolves patterns, assertions, offsets, anchors, pointer references, callsites, or patch sites, that resolver ownership must be represented in the module header
+- do not treat `Patterns::Get(...)` plus a local variable in `.cpp` as sufficient structure by itself
+- the resolver body itself should live in the header when it belongs to the module-owned base
+- the `.cpp` may invoke that resolver during initialization, but should not be the sole home of the resolver implementation
+- review of `<module>.h` should expose the manager's full assertion-owned symbol surface without requiring a second pass over implementation details
+- if a scan block cannot be described cleanly from the header, the module split is still wrong
 
 ## Dependency Unblocking
 

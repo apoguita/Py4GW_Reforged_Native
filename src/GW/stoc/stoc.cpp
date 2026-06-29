@@ -11,52 +11,31 @@
 
 #include <string>
 
+namespace GW::StoC {
+
+CRITICAL_SECTION g_mutex;
+bool g_mutex_initialized = false;
+bool g_hooks_enabled = false;
+std::atomic<bool> g_initialized = false;
+size_t g_stoc_handler_count = 0;
+StoCHandlerArray* g_game_server_handlers = nullptr;
+StoCHandler* g_original_functions = nullptr;
+std::vector<std::vector<CallbackEntry>> g_packet_entries;
+
 void SafeInitializeCriticalSection(CRITICAL_SECTION* mtx) {
     if (!mtx || mtx->DebugInfo) {
         return;
     }
-    ::InitializeCriticalSection(&GW::StoC::g_mutex);
-    GW::StoC::g_mutex_initialized = true;
+    ::InitializeCriticalSection(&g_mutex);
+    g_mutex_initialized = true;
 }
 
-bool ResolveGameServerHandlers() {
-    CrashContextScope context("startup", "stoc", "resolve_game_server_handlers");
-    const auto* pattern = PY4GW::Patterns::Get("stoc.handler_table_pointer");
-    if (!pattern) {
-        Logger::Instance().LogError("Missing or invalid pattern: stoc.handler_table_pointer", "stoc");
-        return false;
-    }
-
-    const uintptr_t pointer_location = PY4GW::Scanner::Find(
-        pattern->pattern.c_str(),
-        pattern->mask.c_str(),
-        pattern->offset,
-        pattern->section);
-    if (!Logger::AssertAddress("StoCHandler_PointerLocation", pointer_location, "stoc")) {
-        return false;
-    }
-
-    const uintptr_t handlers_addr = *reinterpret_cast<uintptr_t*>(pointer_location);
-    if (!Logger::AssertAddress("StoCHandler_Addr", handlers_addr, "stoc")) {
-        return false;
-    }
-
-    auto** game_server = reinterpret_cast<GW::StoC::GameServer**>(handlers_addr);
-    if (!(game_server && *game_server && (*game_server)->gs_codec)) {
-        Logger::Instance().LogError("Game server handler table is not fully initialized.", "stoc");
-        return false;
-    }
-
-    GW::StoC::g_game_server_handlers = &(*game_server)->gs_codec->handlers;
-    return GW::StoC::g_game_server_handlers != nullptr;
-}
-
-bool __cdecl StoCHandler_Func(GW::Packet::StoC::PacketBase* packet) {
+bool __cdecl StoCHandler_Func(Packet::StoC::PacketBase* packet) {
     PY4GW::HookBase::EnterHook();
     PY4GW::HookStatus status = {};
 
-    auto it = GW::StoC::g_packet_entries[packet->header].begin();
-    const auto end = GW::StoC::g_packet_entries[packet->header].end();
+    auto it = g_packet_entries[packet->header].begin();
+    const auto end = g_packet_entries[packet->header].end();
     while (it != end) {
         if (it->altitude > 0) {
             break;
@@ -66,8 +45,8 @@ bool __cdecl StoCHandler_Func(GW::Packet::StoC::PacketBase* packet) {
         ++it;
     }
 
-    if (!status.blocked && GW::StoC::g_original_functions) {
-        GW::StoC::g_original_functions[packet->header].handler_func(packet);
+    if (!status.blocked && g_original_functions) {
+        g_original_functions[packet->header].handler_func(packet);
     }
 
     while (it != end) {
@@ -80,94 +59,83 @@ bool __cdecl StoCHandler_Func(GW::Packet::StoC::PacketBase* packet) {
     return true;
 }
 
-bool OriginalHandler(GW::Packet::StoC::PacketBase* packet) {
+bool OriginalHandler(Packet::StoC::PacketBase* packet) {
     bool ok = false;
-    SafeInitializeCriticalSection(&GW::StoC::g_mutex);
-    ::EnterCriticalSection(&GW::StoC::g_mutex);
-    if (GW::StoC::g_game_server_handlers &&
-        GW::StoC::g_original_functions &&
-        GW::StoC::g_stoc_handler_count > packet->header) {
-        GW::StoC::g_original_functions[packet->header].handler_func(packet);
+    SafeInitializeCriticalSection(&g_mutex);
+    ::EnterCriticalSection(&g_mutex);
+    if (g_game_server_handlers &&
+        g_original_functions &&
+        g_stoc_handler_count > packet->header) {
+        g_original_functions[packet->header].handler_func(packet);
     }
-    ::LeaveCriticalSection(&GW::StoC::g_mutex);
+    ::LeaveCriticalSection(&g_mutex);
     return ok;
 }
 
 void EnableHooks() {
-    ::EnterCriticalSection(&GW::StoC::g_mutex);
-    GW::StoC::g_hooks_enabled = true;
-    for (uint32_t i = 0; GW::StoC::g_original_functions && i < GW::StoC::g_stoc_handler_count; ++i) {
-        GW::StoC::g_original_functions[i] = GW::StoC::g_game_server_handlers->at(i);
-        if (!GW::StoC::g_packet_entries[i].empty()) {
-            GW::StoC::g_game_server_handlers->at(i).handler_func = &StoCHandler_Func;
+    ::EnterCriticalSection(&g_mutex);
+    g_hooks_enabled = true;
+    for (uint32_t i = 0; g_original_functions && i < g_stoc_handler_count; ++i) {
+        g_original_functions[i] = g_game_server_handlers->at(i);
+        if (!g_packet_entries[i].empty()) {
+            g_game_server_handlers->at(i).handler_func = &StoCHandler_Func;
         }
     }
-    ::LeaveCriticalSection(&GW::StoC::g_mutex);
+    ::LeaveCriticalSection(&g_mutex);
 }
 
 void DisableHooks() {
     CrashContextScope context("shutdown", "stoc", "disable_hooks");
-    ::EnterCriticalSection(&GW::StoC::g_mutex);
-    GW::StoC::g_hooks_enabled = false;
-    if (GW::StoC::g_original_functions) {
-        for (uint32_t i = 0; GW::StoC::g_game_server_handlers && i < GW::StoC::g_game_server_handlers->size(); ++i) {
-            GW::StoC::g_game_server_handlers->at(i).handler_func = GW::StoC::g_original_functions[i].handler_func;
+    ::EnterCriticalSection(&g_mutex);
+    g_hooks_enabled = false;
+    if (g_original_functions) {
+        for (uint32_t i = 0; g_game_server_handlers && i < g_game_server_handlers->size(); ++i) {
+            g_game_server_handlers->at(i).handler_func = g_original_functions[i].handler_func;
         }
     }
-    ::LeaveCriticalSection(&GW::StoC::g_mutex);
+    ::LeaveCriticalSection(&g_mutex);
 }
 
-void InitOnGameThread() {
-    CrashContextScope context("startup", "stoc", "init_on_game_thread");
-    SafeInitializeCriticalSection(&GW::StoC::g_mutex);
-    ::EnterCriticalSection(&GW::StoC::g_mutex);
+void Init() {
+    CrashContextScope context("startup", "stoc", "init");
+    SafeInitializeCriticalSection(&g_mutex);
+    ::EnterCriticalSection(&g_mutex);
 
-    if (!ResolveGameServerHandlers() || !GW::StoC::g_game_server_handlers) {
-        ::LeaveCriticalSection(&GW::StoC::g_mutex);
+    if (!ResolveGameServerHandlers() || !g_game_server_handlers) {
+        ::LeaveCriticalSection(&g_mutex);
         return;
     }
 
-    GW::StoC::g_stoc_handler_count = GW::StoC::g_game_server_handlers->size();
-    Logger::Instance().LogInfo("STOC_HEADER_COUNT [" + std::to_string(GW::StoC::g_stoc_handler_count) + "]");
-    PY4GW_ASSERT(GW::StoC::g_stoc_handler_count == GW::StoC::kStoCHeaderCount);
+    g_stoc_handler_count = g_game_server_handlers->size();
+    Logger::Instance().LogInfo("STOC_HEADER_COUNT [" + std::to_string(g_stoc_handler_count) + "]");
+    PY4GW_ASSERT(g_stoc_handler_count == kStoCHeaderCount);
 
-    if (!GW::StoC::g_original_functions) {
-        GW::StoC::g_original_functions = new GW::StoC::StoCHandler[GW::StoC::g_stoc_handler_count];
-        GW::StoC::g_mutex_initialized = true;
+    if (!g_original_functions) {
+        g_original_functions = new StoCHandler[g_stoc_handler_count];
+        g_mutex_initialized = true;
     }
-    GW::StoC::g_packet_entries.resize(GW::StoC::g_stoc_handler_count);
+    g_packet_entries.resize(g_stoc_handler_count);
 
     EnableHooks();
-    GW::StoC::g_initialized = true;
-    ::LeaveCriticalSection(&GW::StoC::g_mutex);
+    g_initialized = true;
+    ::LeaveCriticalSection(&g_mutex);
 }
 
 void Exit() {
     CrashContextScope context("shutdown", "stoc", "exit");
     DisableHooks();
 
-    delete[] GW::StoC::g_original_functions;
-    GW::StoC::g_original_functions = nullptr;
-    GW::StoC::g_game_server_handlers = nullptr;
-    GW::StoC::g_stoc_handler_count = 0;
-    GW::StoC::g_packet_entries.clear();
+    delete[] g_original_functions;
+    g_original_functions = nullptr;
+    g_game_server_handlers = nullptr;
+    g_stoc_handler_count = 0;
+    g_packet_entries.clear();
 
-    if (GW::StoC::g_mutex_initialized) {
-        ::DeleteCriticalSection(&GW::StoC::g_mutex);
-        GW::StoC::g_mutex_initialized = false;
+    if (g_mutex_initialized) {
+        ::DeleteCriticalSection(&g_mutex);
+        g_mutex_initialized = false;
     }
 }
-
-namespace GW::StoC {
-
-CRITICAL_SECTION g_mutex;
-bool g_mutex_initialized = false;
-bool g_hooks_enabled = false;
-std::atomic<bool> g_initialized = false;
-size_t g_stoc_handler_count = 0;
-StoCHandlerArray* g_game_server_handlers = nullptr;
-StoCHandler* g_original_functions = nullptr;
-std::vector<std::vector<CallbackEntry>> g_packet_entries;
 
 bool Initialize() {
     CrashContextScope context("startup", "stoc", "initialize");
@@ -180,7 +148,7 @@ bool Initialize() {
 
     SafeInitializeCriticalSection(&g_mutex);
     game_thread::Enqueue([] {
-        InitOnGameThread();
+        Init();
     });
     return true;
 }
@@ -195,4 +163,4 @@ void Shutdown() {
     g_initialized = false;
 }
 
-}  // namespace GW::stoc
+}  // namespace GW::StoC

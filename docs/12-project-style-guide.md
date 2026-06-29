@@ -20,6 +20,9 @@ This document defines mandatory conventions for `Py4GW_Reforged` project-owned c
 - Addresses and hooks must prefer the JSON-backed pattern system.
 - Validate resolved addresses with project assertions before installing hooks.
 - Avoid hardcoded addresses unless the module explicitly documents why they are unavoidable.
+- If a module owns a resolved symbol, offset, anchor, pointer reference, callsite, or patch site, that ownership must be declared from the module header instead of being discoverable only from `.cpp` scan code.
+- `Patterns::Get(...)` usage in `.cpp` must implement a header-declared resolver or named module-owned symbol surface, not replace it.
+- Resolver bodies for module-owned symbols belong in the module header as part of the module-owned base. The `.cpp` may call them, but should not be their only implementation site.
 
 ## Logging Policy
 
@@ -42,7 +45,7 @@ This document defines mandatory conventions for `Py4GW_Reforged` project-owned c
 - If the migration context refresh has not been completed in the current turn, do not make structural migration edits.
 - Base migration structure on the current repo baseline, not on inference or cleanup preferences.
 - Prefer the smallest file count that still matches the repo baseline and keeps the code readable.
-- For ordinary managers, keep structural declarations and public callable declarations in the main module header.
+- For ordinary managers, keep structural declarations, module-owned base declarations, and public callable declarations in the main module header.
 - Do not add functionality or behavioral redesign during migration unless an existing project doc explicitly requires it.
 - If a migration must intentionally differ from legacy behavior, document that deviation explicitly instead of mixing it into parity work.
 - Do not rename legacy-local helpers, callback routines, or internal function shapes during parity migration unless the rename is required by project integration and the deviation is called out.
@@ -65,10 +68,13 @@ This document defines mandatory conventions for `Py4GW_Reforged` project-owned c
 - Do not explode a small manager into many files unless the current repo baseline already uses that split for the same subsystem class.
 - For a small manager with public callable methods, the default output is `<module>.h`, `<module>.cpp`, and optionally `<module>_methods.cpp`.
 - If the manager has no public callable methods beyond lifecycle, the methods file may be omitted.
-- Put callback types, typedefs, aliases, globals, registration APIs, and structural declarations in the main module header.
+- Put callback types, typedefs, aliases, globals, registration APIs, packet helper structs, resolver declarations, hook callback declarations, and structural declarations in the main module header.
+- Put declaration ownership for pattern-resolved functions, assertion-backed anchors, pointer scans, offsets, and patch sites in the main module header too.
 - Put public callable function declarations in the main module header.
-- Put internal-only helpers, setup, hooks, and private implementation in the main module `.cpp`.
+- Put setup, assertions, hooks, and private implementation bodies in the main module `.cpp`, but declare the manager-owned base they implement in the main module header.
+- Put resolver definitions themselves in the main module header when they resolve module-owned symbols.
 - Put public callable method bodies in the methods `.cpp` when that split exists.
+- Do not leave code like `const auto* pattern = PY4GW::Patterns::Get(...)` or assertion-anchor fetches as unnamed implementation-only structure when they resolve manager-owned symbols; the header must expose the resolver ownership explicitly.
 - Treat any function declared in `<module>.h` for use by other modules as a public callable method even if it is a namespace-scope free function rather than a class member.
 - Do not decide "method" versus "private helper" by whether the function looks like a getter; decide it by whether it is part of the module's callable surface.
 - For example, `stoc` functions such as `RegisterPacketCallback`, `RegisterPostPacketCallback`, `RemoveCallback`, `RemoveCallbacks`, `RemovePostCallback`, and `EmulatePacket` are methods and belong in `stoc_methods.cpp` when that file exists.
@@ -89,6 +95,8 @@ This document defines mandatory conventions for `Py4GW_Reforged` project-owned c
 - Does the header include `base/error_handling.h`?
 - Are fatal invariants using `PY4GW_ASSERT`, `PY4GW_REQUIRE`, or `PY4GW_PANIC`?
 - Does hook resolution go through project scanning and assertion paths?
+- Does the module header make the owned pattern-resolution surface explicit, or are offsets and anchors hidden in unnamed `.cpp` scan blocks?
+- Are resolver bodies for module-owned symbols actually in the header, instead of merely declared there?
 - Does the migration avoid adding new behavior beyond documented project rules?
 - If behavior changed intentionally, is the deviation documented explicitly?
 - If local helper names or signatures changed, was that actually required and documented?

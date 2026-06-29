@@ -4,11 +4,6 @@
 
 namespace GW::events {
 
-SendEventMessageFn g_send_event_message_func = nullptr;
-SendEventMessageFn g_send_event_message_original = nullptr;
-std::unordered_map<EventID, std::vector<CallbackEntry>> g_callbacks;
-std::atomic<bool> g_initialized = false;
-
 void RegisterEventCallback(
     PY4GW::HookEntry* entry,
     EventID event_id,

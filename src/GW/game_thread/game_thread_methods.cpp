@@ -6,15 +6,6 @@
 
 namespace GW::game_thread {
 
-CRITICAL_SECTION g_mutex;
-bool g_mutex_initialized = false;
-LeaveGameThreadFn g_leave_game_thread_func = nullptr;
-LeaveGameThreadFn g_leave_game_thread_original = nullptr;
-std::atomic<bool> g_initialized = false;
-std::atomic<bool> g_in_game_thread = false;
-std::vector<std::function<void()>> g_singleshot_callbacks;
-std::vector<CallbackEntry> g_callbacks;
-
 void ClearCalls() {
     if (!g_initialized || !g_mutex_initialized) {
         return;

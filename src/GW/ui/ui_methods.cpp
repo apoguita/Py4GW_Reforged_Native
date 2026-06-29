@@ -518,31 +518,23 @@ bool GetFrameMinSize(Frame* frame, float* width, float* height) {
         return false;
     }
     if (width) {
-        *width = 0.0f;
+        *width = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x50);
     }
     if (height) {
-        *height = 0.0f;
+        *height = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x54);
     }
-    return false;
+    return true;
 }
 
 bool GetFrameClientBorder(Frame* frame, float* left, float* top, float* right, float* bottom) {
     if (!frame) {
         return false;
     }
-    if (left) {
-        *left = 0.0f;
-    }
-    if (top) {
-        *top = 0.0f;
-    }
-    if (right) {
-        *right = 0.0f;
-    }
-    if (bottom) {
-        *bottom = 0.0f;
-    }
-    return false;
+    if (left)   *left   = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x58);
+    if (top)    *top    = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x5C);
+    if (right)  *right  = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x60);
+    if (bottom) *bottom = *reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(frame) + 0x64);
+    return true;
 }
 
 bool GetFrameClipRect(Frame* frame, float* left, float* top, float* right, float* bottom) {
@@ -2533,6 +2525,42 @@ void RemoveCreateUIComponentCallback(PY4GW::HookEntry* entry) {
         }),
         g_create_ui_component_callbacks.end());
     ::LeaveCriticalSection(&g_callback_mutex);
+}
+
+bool GetCommandLinePref(const wchar_t* label, wchar_t** out) {
+    if (!(g_get_command_line_string_func && label && out)) {
+        return false;
+    }
+    *out = g_get_command_line_string_func(
+        *reinterpret_cast<const uint32_t*>(label));
+    return *out != nullptr;
+}
+
+bool GetCommandLinePref(const wchar_t* label, uint32_t* out) {
+    if (!(g_get_command_line_number_func && label && out)) {
+        return false;
+    }
+    *out = g_get_command_line_number_func(
+        *reinterpret_cast<const uint32_t*>(label));
+    return true;
+}
+
+bool SetCommandLinePref(const wchar_t* label, wchar_t* value) {
+    if (!(g_get_command_line_string_func && g_command_line_number_buffer && label && value)) {
+        return false;
+    }
+    const uint32_t param_id = *reinterpret_cast<const uint32_t*>(label);
+    g_command_line_number_buffer[param_id] = reinterpret_cast<uint32_t>(value);
+    return true;
+}
+
+bool SetCommandLinePref(const wchar_t* label, uint32_t value) {
+    if (!(g_command_line_number_buffer && label)) {
+        return false;
+    }
+    const uint32_t param_id = *reinterpret_cast<const uint32_t*>(label);
+    g_command_line_number_buffer[param_id] = value;
+    return true;
 }
 
 }  // namespace GW::ui

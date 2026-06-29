@@ -2,11 +2,11 @@
 
 #include "GW/stoc/stoc.h"
 
-void SafeInitializeCriticalSection(CRITICAL_SECTION* mtx);
-bool __cdecl StoCHandler_Func(GW::Packet::StoC::PacketBase* packet);
-bool OriginalHandler(GW::Packet::StoC::PacketBase* packet);
-
 namespace GW::StoC {
+
+void SafeInitializeCriticalSection(CRITICAL_SECTION* mtx);
+bool __cdecl StoCHandler_Func(Packet::StoC::PacketBase* packet);
+bool OriginalHandler(Packet::StoC::PacketBase* packet);
 
 bool RegisterPacketCallback(
     PY4GW::HookEntry* entry,
@@ -92,4 +92,4 @@ bool EmulatePacket(Packet::StoC::PacketBase* packet) {
     return OriginalHandler(packet);
 }
 
-}  // namespace GW::stoc
+}  // namespace GW::StoC

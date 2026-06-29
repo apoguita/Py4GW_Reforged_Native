@@ -19,6 +19,7 @@ namespace GW {
         float _33;
         float _34;
         uint32_t flags;
+        enum Flags : uint32_t { Shear = 1 << 3 };
     } Mat4x3f;
 
     struct Vec2f {

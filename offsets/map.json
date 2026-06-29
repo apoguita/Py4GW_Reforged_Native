@@ -48,6 +48,18 @@
       "mask": "xxxxx??xx",
       "offset": "0",
       "section": "text"
+    },
+    "world_map_ui_callback": {
+      "pattern": "\\x83\\xE8\\x04\\x83\\xF8\\x52",
+      "mask": "xxxxxx",
+      "offset": "0",
+      "section": "text"
+    },
+    "mission_map_ui_callback": {
+      "pattern": "\\x08\\x3D\\x00\\x00\\x00\\x10",
+      "mask": "xxxxxx",
+      "offset": "0",
+      "section": "text"
     }
   }
 }

@@ -1,0 +1,136 @@
+{
+  "namespace": "item",
+  "patterns": {
+    "storage_open_ptr": {
+      "pattern": "\\xC7\\x00\\x0F\\x00\\x00\\x00\\x89\\x48\\x14",
+      "mask": "xxxxxxxxx",
+      "offset": "-0x28",
+      "section": "text"
+    },
+    "item_click_func": {
+      "pattern": "\\x8B\\x48\\x08\\x83\\xEA\\x00\\x0F\\x84",
+      "mask": "xxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "use_item_func": {
+      "pattern": "\\x0f\\xb6\\x40\\x04\\x83\\xc0\\xf8",
+      "mask": "xxxxxxx",
+      "offset": "0x1f",
+      "section": "text"
+    },
+    "equip_item_assertion": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmItemHelpers.cpp",
+      "assertion_message": "targetAgentId",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "move_item_assertion": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmItemHelpers.cpp",
+      "assertion_message": "ItemCliValidate(sourceItemId)",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "drop_item_func": {
+      "pattern": "\\x83\\xc4\\x40\\x6a\\x00\\x6a\\x19",
+      "mask": "xxxxxxx",
+      "offset": "-0x4e",
+      "section": "text"
+    },
+    "salvage_popup_assertion": {
+      "assertion_file": "InvSalvage.cpp",
+      "assertion_message": "m_toolId",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "drop_gold_salvage_assertion": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmView.cpp",
+      "assertion_message": "param.notifyData",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "salvage_start_assertion": {
+      "assertion_file": "ItCliApi.cpp",
+      "assertion_message": "context->inventoryTable.Get(targetInventoryId)",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "identify_item_assertion": {
+      "assertion_file": "ItCliApi.cpp",
+      "assertion_message": "context->itemTable.Get(srcItemId)",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "destroy_item_func": {
+      "pattern": "\\x83\\x78\\x08\\x0b\\x75\\x3f",
+      "mask": "xxxxxx",
+      "offset": "0xe",
+      "section": "text"
+    },
+    "change_equipment_visibility_func": {
+      "pattern": "\\x8b\\x42\\x04\\x51\\x23\\xc1",
+      "mask": "xxxxxx",
+      "offset": "0x7",
+      "section": "text"
+    },
+    "change_gold_func": {
+      "pattern": "\\x68\\x21\\x03\\x00\\x00\\x89\\x45\\xfc",
+      "mask": "xxxxxxxx",
+      "offset": "0x54",
+      "section": "text"
+    },
+    "open_locked_chest_func": {
+      "pattern": "\\x83\\xc9\\x01\\x89\\x4b\\x24",
+      "mask": "xxxxxx",
+      "offset": "0x28",
+      "section": "text"
+    },
+    "ping_weapon_set_assertion": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmWeaponBar.cpp",
+      "assertion_message": "slotIndex < ITEM_PLAYER_EQUIP_SETS",
+      "line_number": "0",
+      "offset": "0x128",
+      "section": "text"
+    },
+    "pvp_item_upgrade_array_assertion": {
+      "assertion_file": "\\Code\\Gw\\Const\\ConstItemPvp.cpp",
+      "assertion_message": "unlockIndex < ITEM_PVP_UNLOCK_COUNT",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "pvp_item_array_assertion": {
+      "assertion_file": "\\Code\\Gw\\Const\\ConstItemPvp.cpp",
+      "assertion_message": "index < ITEM_PVP_ITEM_COUNT",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "composite_model_info_array_assertion": {
+      "assertion_file": "\\Code\\Gw\\Composite\\Data\\CpsData.cpp",
+      "assertion_message": "id < s_items.Count()",
+      "line_number": "0",
+      "offset": "-0xb",
+      "section": "text"
+    },
+    "pvp_item_upgrade_name_func": {
+      "pattern": "\\xff\\x75\\x0c\\x81\\xc1\\xb4\\x00\\x00\\x00",
+      "mask": "xxxxxxxxx",
+      "offset": "-0x11",
+      "section": "text"
+    },
+    "item_formulas_assertion": {
+      "assertion_file": "\\Code\\Gw\\Const\\ConstItem.cpp",
+      "assertion_message": "formula < ITEM_FORMULAS",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    }
+  }
+}

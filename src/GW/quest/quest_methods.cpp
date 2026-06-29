@@ -10,13 +10,33 @@
 
 namespace GW::quest {
 
-RequestQuestInfoFn g_request_quest_info_func = nullptr;
-RequestQuestDataFn g_request_quest_data_func = nullptr;
-std::atomic<bool> g_initialized = false;
-
 GW::Constants::QuestID GetActiveQuestId() {
     auto* world = Context::GetWorldContext();
     return world ? world->active_quest_id : static_cast<GW::Constants::QuestID>(0);
+}
+
+bool SetActiveQuestId(GW::Constants::QuestID quest_id) {
+    if (!(g_set_active_quest_func && GetQuest(quest_id))) {
+        return false;
+    }
+    g_set_active_quest_func(static_cast<uint32_t>(quest_id));
+    return true;
+}
+
+bool SetActiveQuest(Context::Quest* quest) {
+    return quest && SetActiveQuestId(quest->quest_id);
+}
+
+bool AbandonQuest(Context::Quest* quest) {
+    return quest && AbandonQuestId(quest->quest_id);
+}
+
+bool AbandonQuestId(GW::Constants::QuestID quest_id) {
+    if (!(g_abandon_quest_func && GetQuest(quest_id))) {
+        return false;
+    }
+    g_abandon_quest_func(static_cast<uint32_t>(quest_id));
+    return true;
 }
 
 Context::Quest* GetActiveQuest() {

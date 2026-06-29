@@ -9,16 +9,7 @@
 #include "GW/context/game_context.h"
 #include "GW/context/map_context.h"
 #include "GW/context/world_context.h"
-
-namespace {
-struct InstanceInfo {
-    void* terrain_info1;
-    GW::Constants::InstanceType instance_type;
-    GW::Context::AreaInfo* current_map_info;
-    uint32_t terrain_count;
-    void* terrain_info2;
-};
-}
+#include "GW/ui/ui.h"
 
 namespace GW::map {
 
@@ -213,6 +204,72 @@ bool CancelEnterChallenge() {
     }
     g_cancel_enter_challenge_mission_func();
     return true;
+}
+
+MissionMapContext* GetMissionMapContext() {
+    return g_mission_map_context;
+}
+
+WorldMapContext* GetWorldMapContext() {
+    return g_world_map_context;
+}
+
+bool Travel(GW::Constants::MapID map_id, GW::Constants::ServerRegion region, int district_number, GW::Constants::Language language) {
+    struct MapStruct {
+        GW::Constants::MapID map_id;
+        GW::Constants::ServerRegion region;
+        GW::Constants::Language language;
+        int district_number;
+    };
+    MapStruct t;
+    t.map_id = map_id;
+    t.district_number = district_number;
+    t.region = region;
+    t.language = language;
+    return ui::SendUIMessage(ui::UIMessage::kTravel, &t);
+}
+
+bool Travel(GW::Constants::MapID map_id, GW::Constants::District district, int district_number) {
+    return Travel(map_id, RegionFromDistrict(district), district_number, LanguageFromDistrict(district));
+}
+
+bool MapTestStart(uint32_t map_id, uint32_t alt_map_id, int number, uint32_t count, uint32_t delay_ms, uint32_t timeout_ms, uint32_t message_id) {
+    if (!map_id || !alt_map_id) {
+        return false;
+    }
+    g_map_test_state.active = true;
+    g_map_test_state.map_id = map_id;
+    g_map_test_state.alt_map_id = alt_map_id;
+    g_map_test_state.number = number;
+    g_map_test_state.count = count;
+    g_map_test_state.delay_ms = delay_ms;
+    g_map_test_state.timeout_ms = timeout_ms;
+    g_map_test_state.message_id = message_id;
+    g_map_test_state.tries = 0;
+    MapTestSetPhase(0 /* kMtIdle */, "start");
+    MapTestStep0();
+    return true;
+}
+
+void MapTestStop() {
+    g_map_test_state.active = false;
+    MapTestSetPhase(6 /* kMtStop */, "stop");
+}
+
+const char* MapTestGetStatus() {
+    return g_map_test_state.status.c_str();
+}
+
+bool MapTestIsActive() {
+    return g_map_test_state.active;
+}
+
+uint32_t MapTestGetCount() {
+    return g_map_test_state.tries;
+}
+
+bool EnterChallenge() {
+    return ui::SendUIMessage(ui::UIMessage::kSendEnterMission, reinterpret_cast<void*>(static_cast<uintptr_t>(GW::Constants::MapID::Count)));
 }
 
 }  // namespace GW::map

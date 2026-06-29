@@ -2,9 +2,13 @@
 
 #include "base/error_handling.h"
 
-#include "GW/common/stoc.h"
-#include "GW/common/gw_array.h"
+#include "base/CrashHandler.h"
 #include "base/hook_types.h"
+#include "base/logger.h"
+#include "base/patterns.h"
+#include "base/scanner.h"
+#include "GW/common/gw_array.h"
+#include "GW/common/stoc.h"
 
 #include <atomic>
 #include <cstddef>
@@ -109,6 +113,13 @@ bool EmulatePacket(Packet::StoC::Packet<T>* packet_value) {
     return EmulatePacket(static_cast<Packet::StoC::PacketBase*>(packet_value));
 }
 
+void Init();
+void EnableHooks();
+void DisableHooks();
+void Exit();
+
+bool __cdecl StoCHandler_Func(Packet::StoC::PacketBase* packet);
+
 extern CRITICAL_SECTION g_mutex;
 extern bool g_mutex_initialized;
 extern bool g_hooks_enabled;
@@ -118,4 +129,36 @@ extern StoCHandlerArray* g_game_server_handlers;
 extern StoCHandler* g_original_functions;
 extern std::vector<std::vector<CallbackEntry>> g_packet_entries;
 
-}  // namespace GW::stoc
+inline bool ResolveGameServerHandlers() {
+    CrashContextScope context("startup", "stoc", "resolve_game_server_handlers");
+    const auto* pattern = PY4GW::Patterns::Get("stoc.handler_table_pointer");
+    if (!pattern) {
+        Logger::Instance().LogError("Missing or invalid pattern: stoc.handler_table_pointer", "stoc");
+        return false;
+    }
+
+    const uintptr_t pointer_location = PY4GW::Scanner::Find(
+        pattern->pattern.c_str(),
+        pattern->mask.c_str(),
+        pattern->offset,
+        pattern->section);
+    if (!Logger::AssertAddress("StoCHandler_PointerLocation", pointer_location, "stoc")) {
+        return false;
+    }
+
+    const uintptr_t handlers_addr = *reinterpret_cast<uintptr_t*>(pointer_location);
+    if (!Logger::AssertAddress("StoCHandler_Addr", handlers_addr, "stoc")) {
+        return false;
+    }
+
+    auto** game_server = reinterpret_cast<GameServer**>(handlers_addr);
+    if (!(game_server && *game_server && (*game_server)->gs_codec)) {
+        Logger::Instance().LogError("Game server handler table is not fully initialized.", "stoc");
+        return false;
+    }
+
+    g_game_server_handlers = &(*game_server)->gs_codec->handlers;
+    return g_game_server_handlers != nullptr;
+}
+
+}  // namespace GW::StoC

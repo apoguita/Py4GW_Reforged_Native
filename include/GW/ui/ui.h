@@ -2,12 +2,27 @@
 
 #include "base/error_handling.h"
 
+#include "base/CrashHandler.h"
 #include "base/hook_types.h"
+#include "base/logger.h"
+#include "base/patterns.h"
+#include "base/scanner.h"
 #include "GW/common/constants/constants.h"
 #include "GW/common/game_pos.h"
 #include "GW/common/gw_array.h"
 #include "GW/common/gw_list.h"
 #include "GW/render/render.h"
+#include "GW/context/agent.h"
+#include "GW/context/skill.h"
+
+// Forward declarations for types from headers that include ui.h (circular dependency)
+namespace GW::chat {
+    enum Channel : int;
+    using Color = uint32_t;
+}
+namespace GW::skillbar {
+    struct SkillTemplate;
+}
 
 #include <atomic>
 #include <cstddef>
@@ -731,6 +746,38 @@ struct CreateUIComponentPacket {
     wchar_t* component_label;
 };
 
+struct ChangeTargetUIMsg {
+    uint32_t manual_target_id;
+    uint32_t h0008;
+    uint32_t auto_target_id;
+    uint32_t h0010;
+    uint32_t current_target_id;
+    uint32_t h0018;
+};
+
+enum class TooltipType : uint32_t {
+    None = 0x0,
+    EncString1 = 0x4,
+    EncString2 = 0x6,
+    Item = 0x8,
+    WeaponSet = 0xC,
+    Skill = 0x14,
+    Attribute = 0x4000
+};
+
+struct FloatingWindow {
+    void* unk1;
+    wchar_t* name;
+    uint32_t unk2;
+    uint32_t unk3;
+    uint32_t save_preference;
+    uint32_t unk4;
+    uint32_t unk5;
+    uint32_t unk6;
+    uint32_t window_id;
+};
+static_assert(sizeof(FloatingWindow) == 0x24, "FloatingWindow size mismatch");
+
 typedef uint32_t(__cdecl* EnumClampValueFn)(uint32_t pref_id, uint32_t original_value);
 
 struct EnumPreferenceInfo {
@@ -917,6 +964,14 @@ struct WindowPosition {
     GW::Vec2f p2;
 
     bool visible() const { return (state & 0x1) != 0; }
+    float xAxis(float ratio) const { return p1.x + (p2.x - p1.x) * ratio; }
+    float yAxis(float ratio) const { return p1.y + (p2.y - p1.y) * ratio; }
+    GW::Vec2f left() const { return GW::Vec2f(p1.x, yAxis(0.5f)); }
+    GW::Vec2f right() const { return GW::Vec2f(p2.x, yAxis(0.5f)); }
+    GW::Vec2f top() const { return GW::Vec2f(xAxis(0.5f), p1.y); }
+    GW::Vec2f bottom() const { return GW::Vec2f(xAxis(0.5f), p2.y); }
+    float width() const { return p2.x - p1.x; }
+    float height() const { return p2.y - p1.y; }
 };
 
 enum class FrameChild : uint32_t {
@@ -925,6 +980,10 @@ enum class FrameChild : uint32_t {
     NextSibling = 2,
     PrevSibling = 3
 };
+
+} // namespace GW::ui
+
+namespace GW::ui {
 
 namespace packet {
 enum ActionState : uint32_t {
@@ -936,10 +995,204 @@ enum ActionState : uint32_t {
     KeyDown = 0xE
 };
 
+struct kSendCallTarget {
+    Context::CallTargetType call_type;
+    uint32_t agent_id;
+};
+
+struct kMouseCoordsClick {
+    float offset_x;
+    float offset_y;
+    uint32_t h0008;
+    uint32_t h000c;
+    uint32_t* h0010;
+    uint32_t h0014;
+};
+
+struct kIdentifyItem {
+    uint32_t item_id;
+    uint32_t kit_id;
+};
+
+struct kShowXunlaiChest {
+    uint32_t h0000 = 0;
+    bool storage_pane_unlocked = true;
+    bool anniversary_pane_unlocked = true;
+};
+
+struct kMoveItem {
+    uint32_t item_id;
+    uint32_t to_bag_index;
+    uint32_t to_slot;
+    uint32_t prompt;
+};
+
+struct kResize {
+    uint32_t h0000 = 0xffffffff;
+    float content_width;
+    float content_height;
+    float h000c = 0;
+    float h0010 = 0;
+    float content_width2;
+    float content_height2;
+    float margin_x;
+    float margin_y;
+    // ...
+};
+
+struct kTomeSkillSelection {
+    uint32_t item_id;
+    uint32_t h0004;
+    uint32_t h0008;
+};
+
+struct kMeasureContent {
+    float max_width;
+    float max_height;
+    float* size_output;
+    uint32_t flags;
+};
+
+struct kSetLayout {
+    float field_0x0;
+    float field_0x4;
+    float field_0x8;
+    float field_0xc;
+    float available_width;
+    float available_height;
+};
+
+struct kSetAgentProfession {
+    Context::AgentID agent_id;
+    uint32_t primary;
+    uint32_t secondary;
+};
+
+struct kWeaponSwap {
+    uint32_t weapon_bar_frame_id;
+    uint32_t weapon_set_id;
+};
+
+struct kWeaponSetChanged {
+    uint32_t h0000;
+    uint32_t h0004;
+    uint32_t h0008;
+    uint32_t h000c;
+};
+
+struct kChangeTarget {
+    uint32_t evaluated_target_id;
+    bool has_evaluated_target_changed;
+    uint32_t auto_target_id;
+    bool has_auto_target_changed;
+    uint32_t manual_target_id;
+    bool has_manual_target_changed;
+};
+
+struct kSendLoadSkillTemplate {
+    uint32_t agent_id;
+    GW::skillbar::SkillTemplate* skill_template;
+};
+
+struct kSetRendererValue {
+    uint32_t renderer_mode; // 0 for window, 2 for full screen
+    uint32_t metric_id; // TODO: Enum this!
+    uint32_t value;
+};
+
+struct kEffectAdd {
+    uint32_t agent_id;
+    Context::Effect* effect;
+};
+
+struct kAgentSpeechBubble {
+    uint32_t agent_id;
+    wchar_t* message;
+    uint32_t h0008;
+    uint32_t h000c;
+};
+
+struct kAgentStartCasting {
+    uint32_t agent_id;
+    Constants::SkillID skill_id;
+    float duration;
+    uint32_t h000c;
+};
+
+struct kPreStartSalvage {
+    uint32_t item_id;
+    uint32_t kit_id;
+};
+
+struct kServerActiveQuestChanged {
+    Constants::QuestID quest_id;
+    GamePos marker;
+    uint32_t h0024;
+    Constants::MapID map_id;
+    uint32_t log_state;
+};
+
+struct kPrintChatMessage {
+    chat::Channel channel;
+    wchar_t* message;
+    FILETIME timestamp;
+    uint32_t is_reprint;
+};
+
+struct kPartyShowConfirmDialog {
+    uint32_t ui_message_to_send_to_party_frame;
+    uint32_t prompt_identitifier;
+    wchar_t* prompt_enc_str;
+};
+
+struct kUIPositionChanged {
+    uint32_t window_id;
+    WindowPosition* position;
+};
+
+struct kPreferenceFlagChanged {
+    FlagPreference preference_id;
+    uint32_t new_value;
+};
+
+struct kPreferenceValueChanged {
+    NumberPreference preference_id;
+    uint32_t new_value;
+};
+
+struct kPreferenceEnumChanged {
+    EnumPreference preference_id;
+    uint32_t enum_index;
+};
+
+struct kPartySearchInvite {
+    uint32_t source_party_search_id;
+    uint32_t dest_party_search_id;
+};
+
+struct kPostProcessingEffect {
+    uint32_t tint;
+    float amount;
+};
+
+struct kLogout {
+    uint32_t unknown;
+    uint32_t character_select;
+};
+static_assert(sizeof(kLogout) == 0x8);
+
 struct KeyAction {
     ControlAction gw_key;
     uint32_t h0004 = 0x4000;
     uint32_t h0008 = 6;
+};
+
+struct kMouseClick {
+    uint32_t mouse_button; // 0x0 = left, 0x1 = middle, 0x2 = right
+    uint32_t is_doubleclick;
+    uint32_t unknown_type_screen_pos;
+    uint32_t h000c;
+    uint32_t h0010;
 };
 
 struct MouseAction {
@@ -948,6 +1201,140 @@ struct MouseAction {
     uint32_t current_state;
     void* wparam = nullptr;
     void* lparam = nullptr;
+};
+
+struct kWriteToChatLog {
+    chat::Channel channel;
+    wchar_t* message;
+    chat::Channel channel_dupe;
+};
+
+struct kPlayerChatMessage {
+    chat::Channel channel;
+    wchar_t* message;
+    uint32_t player_number;
+};
+
+struct kInteractAgent {
+    uint32_t agent_id;
+    bool call_target;
+};
+
+struct kSendChangeTarget {
+    uint32_t target_id;
+    uint32_t auto_target_id;
+};
+
+struct kGetColor {
+    chat::Color* color;
+    chat::Channel channel;
+};
+
+struct kWriteToChatLogWithSender {
+    uint32_t channel;
+    wchar_t* message;
+    wchar_t* sender_enc;
+};
+
+struct kSendLoadSkillbar {
+    uint32_t agent_id;
+    uint32_t* skill_ids;
+};
+
+struct kSendPingWeaponSet {
+    uint32_t agent_id;
+    uint32_t weapon_item_id;
+    uint32_t offhand_item_id;
+};
+
+struct kSendMoveItem {
+    uint32_t item_id;
+    uint32_t quantity;
+    uint32_t bag_id;
+    uint32_t slot;
+};
+
+struct kSendUseItem {
+    uint32_t item_id;
+    uint16_t quantity; // Unused, but would be cool
+};
+
+struct kSendChatMessage {
+    wchar_t* message;
+    uint32_t agent_id;
+};
+
+struct kLogChatMessage {
+    wchar_t* message;
+    chat::Channel channel;
+};
+
+struct kRecvWhisper {
+    uint32_t transaction_id;
+    wchar_t* from;
+    wchar_t* message;
+};
+
+struct kStartWhisper {
+    wchar_t* player_name;
+};
+
+struct kCompassDraw {
+    uint32_t player_number;
+    uint32_t session_id;
+    uint32_t number_of_points;
+    CompassPoint* points;
+};
+
+struct kObjectiveAdd {
+    uint32_t objective_id;
+    wchar_t* name;
+    uint32_t type;
+};
+
+struct kObjectiveComplete {
+    uint32_t objective_id;
+};
+
+struct kObjectiveUpdated {
+    uint32_t objective_id;
+};
+
+struct kItemUpdated {
+    uint32_t item_id;
+    uint32_t model_file_id;
+    uint32_t type;
+    uint32_t unk1;
+    uint32_t extra_id; // Dye color
+    uint32_t materials;
+    uint32_t unk2;
+    uint32_t interaction; // Flags
+    uint32_t price;
+    uint32_t model_id;
+    uint32_t quantity;
+    wchar_t* enc_name;
+    uint32_t mod_struct_size;
+    uint32_t* mod_struct;
+};
+
+struct kInventorySlotUpdated {
+    uint32_t unk;
+    uint32_t item_id;
+    uint32_t bag_index;
+    uint32_t slot_id;
+};
+
+struct kSendWorldAction {
+    Context::WorldActionId action_id;
+    Context::AgentID agent_id;
+    bool suppress_call_target; // 1 to block "I'm targetting X", but will also only trigger if the key thing is down
+};
+
+struct kAllyOrGuildMessage {
+    chat::Channel channel;
+    wchar_t* message;
+    wchar_t* sender;
+    wchar_t* guild_tag;
 };
 }
 
@@ -964,11 +1351,12 @@ using SetWindowVisibleFn = void(__cdecl*)(uint32_t window_id, uint32_t is_visibl
 using SetWindowPositionFn = void(__cdecl*)(uint32_t window_id, WindowPosition* info, void* wparam, void* lparam);
 using ValidateAsyncDecodeStrFn = void(__cdecl*)(const wchar_t* value, DecodeStr_Callback callback, void* wparam);
 using TitleBinarySearchFn = uint32_t(__fastcall*)(void* table, void* edx, void* key, uint32_t* result_entry);
-using GetTitleFn = const wchar_t*(__cdecl*)(void* nonclient);
+using GetTitleFn = const wchar_t*(__fastcall*)(void* nonclient);
 using DrawOnCompassFn = void(__cdecl*)(uint32_t session_id, uint32_t point_count, CompassPoint* points);
 using CreateUIComponentFn = uint32_t(__cdecl*)(uint32_t frame_id, uint32_t component_flags, uint32_t tab_index, void* event_callback, wchar_t* name_enc, wchar_t* component_label);
 using DestroyUIComponentFn = bool(__cdecl*)(uint32_t frame_id);
 using FrameNewSubclassFn = uint32_t(__cdecl*)(uint32_t frame_id, void* subclass_proc, uint32_t msg_id);
+using SetTooltipFn = void(__cdecl*)(TooltipInfo** tooltip);
 using TypedComponentPassthroughFn = void(__cdecl*)(void* param_1, void* param_2, void* param_3, void* param_4, void* param_5);
 using GetFlagPreferenceFn = bool(__cdecl*)(uint32_t flag_pref_id);
 using SetFlagPreferenceFn = void(__cdecl*)(uint32_t flag_pref_id, bool value);
@@ -1091,6 +1479,10 @@ bool SetPreference(EnumPreference pref, uint32_t value);
 bool SetPreference(NumberPreference pref, uint32_t value);
 bool SetPreference(FlagPreference pref, bool value);
 bool SetPreference(StringPreference pref, wchar_t* value);
+bool GetCommandLinePref(const wchar_t* label, wchar_t** out);
+bool GetCommandLinePref(const wchar_t* label, uint32_t* out);
+bool SetCommandLinePref(const wchar_t* label, wchar_t* value);
+bool SetCommandLinePref(const wchar_t* label, uint32_t value);
 void SetOpenLinks(bool toggle);
 WindowPosition* GetWindowPosition(WindowID window_id);
 bool SetWindowVisible(WindowID window_id, bool is_visible);
@@ -1281,8 +1673,8 @@ struct ScrollableFrame : Frame {
 
 // uint32_t GetPreference(...);
 // bool SetPreference(...);
-// bool GetCommandLinePref(...);  // Deferred: header-declared in legacy UIMgr.h, but no body recovered from GWCA UIMgr.cpp.
-// bool SetCommandLinePref(...);  // Deferred: header-declared in legacy UIMgr.h, but no body recovered from GWCA UIMgr.cpp.
+// bool GetCommandLinePref(...);  // Implemented below.
+// bool SetCommandLinePref(...);  // Implemented below.
 // bool Default_UICallback(...);  // Deferred: header-declared in legacy UIMgr.h, but no body recovered from GWCA UIMgr.cpp.
 // bool IsInControllerMode();     // Deferred: header-declared in legacy UIMgr.h, but no body recovered from GWCA UIMgr.cpp.
 // bool IsInControllerCursorMode();  // Deferred: header-declared in legacy UIMgr.h, but no body recovered from GWCA UIMgr.cpp.
@@ -1312,6 +1704,7 @@ extern CreateUIComponentFn g_create_ui_component_func;
 extern CreateUIComponentFn g_create_ui_component_original;
 extern DestroyUIComponentFn g_destroy_ui_component_func;
 extern FrameNewSubclassFn g_frame_new_subclass_func;
+extern SetTooltipFn g_set_tooltip_func;
 extern TypedComponentPassthroughFn g_typed_component_passthrough_func;
 extern GetFlagPreferenceFn g_get_flag_preference_func;
 extern SetFlagPreferenceFn g_set_flag_preference_func;
@@ -1335,6 +1728,9 @@ extern SetMasterVolumeFn g_set_master_volume_func;
 extern EnumPreferenceInfo* g_enum_preference_options_addr;
 extern NumberPreferenceInfo* g_number_preference_options_addr;
 extern uint32_t* g_command_line_number_buffer;
+extern GetFlagPreferenceFn g_get_command_line_flag_func;
+extern GetStringPreferenceFn g_get_command_line_string_func;
+extern GetNumberPreferenceFn g_get_command_line_number_func;
 extern uint32_t g_create_flat_button_dialog_subclass_type;
 extern UIInteractionCallback g_button_frame_callback;
 extern UIInteractionCallback g_ctl_button_proc_callback;
@@ -1368,5 +1764,562 @@ extern PY4GW::HookEntry g_open_template_hook;
 extern std::atomic<bool> g_initialized;
 extern std::atomic<bool> g_shutting_down;
 extern std::atomic<uint32_t> g_active_hooks;
+
+inline uintptr_t FindPatternAddress(const char* name) {
+    const auto* pattern = PY4GW::Patterns::Get(name);
+    if (!pattern) {
+        Logger::Instance().LogError(std::string("Missing or invalid pattern: ") + name, "ui");
+        return 0;
+    }
+    if (!pattern->assertion_file.empty() || !pattern->assertion_message.empty()) {
+        return PY4GW::Scanner::FindAssertion(
+            pattern->assertion_file.c_str(),
+            pattern->assertion_message.c_str(),
+            static_cast<uint32_t>(pattern->line_number),
+            pattern->offset);
+    }
+    return PY4GW::Scanner::Find(
+        pattern->pattern.c_str(),
+        pattern->mask.c_str(),
+        pattern->offset,
+        pattern->section);
+}
+
+inline bool WarnIfMissingAddress(const char* name, uintptr_t address) {
+    if (address) {
+        return true;
+    }
+    Logger::Instance().LogWarning(std::string(name) + " is null.", "ui");
+    return false;
+}
+
+inline bool ResolveFrameArray() {
+    CrashContextScope context("startup", "ui", "resolve_frame_array");
+    const uintptr_t address = FindPatternAddress("ui.frame_array_anchor");
+    if (!Logger::AssertAddress("s_FrameArray_Ref", address, "ui")) {
+        return false;
+    }
+    g_frame_array = *reinterpret_cast<GW::GWArray<Frame*>**>(address);
+    return Logger::AssertAddress("s_FrameArray", reinterpret_cast<uintptr_t>(g_frame_array), "ui");
+}
+
+inline bool ResolveWorldMapState() {
+    CrashContextScope context("startup", "ui", "resolve_world_map_state");
+    const uintptr_t address = FindPatternAddress("ui.world_map_state");
+    if (!Logger::AssertAddress("WorldMapState_Ref", address, "ui")) {
+        return false;
+    }
+    const uintptr_t candidate = *reinterpret_cast<uintptr_t*>(address);
+    if (!Logger::AssertAddress("WorldMapState_Addr", candidate, "ui")) {
+        return false;
+    }
+    g_world_map_state_addr = candidate;
+    return true;
+}
+
+inline bool ResolveSendFrameUiMessage() {
+    CrashContextScope context("startup", "ui", "resolve_send_frame_ui_message");
+    const uintptr_t address = FindPatternAddress("ui.send_frame_ui_message_by_id");
+    if (!Logger::AssertAddress("SendFrameUIMessageById_Func", address, "ui")) {
+        return false;
+    }
+    g_send_frame_ui_message_by_id_func = reinterpret_cast<SendFrameUIMessageByIdFn>(address);
+    g_send_frame_ui_message_func = reinterpret_cast<SendFrameUIMessageFn>(
+        PY4GW::Scanner::FunctionFromNearCall(address + 0x67));
+    return Logger::AssertAddress("SendFrameUIMessage_Func", reinterpret_cast<uintptr_t>(g_send_frame_ui_message_func), "ui");
+}
+
+inline bool ResolveCreateHashFromWchar() {
+    CrashContextScope context("startup", "ui", "resolve_create_hash_from_wchar");
+    const uintptr_t address = FindPatternAddress("ui.create_hash_from_wchar");
+    if (!Logger::AssertAddress("CreateHashFromWchar_Callsite", address, "ui")) {
+        return false;
+    }
+    g_create_hash_from_wchar_func = reinterpret_cast<CreateHashFromWcharFn>(
+        PY4GW::Scanner::FunctionFromNearCall(address));
+    return Logger::AssertAddress("CreateHashFromWchar_Func", reinterpret_cast<uintptr_t>(g_create_hash_from_wchar_func), "ui");
+}
+
+inline bool ResolveGetChildFrameId() {
+    CrashContextScope context("startup", "ui", "resolve_get_child_frame_id");
+    const uintptr_t address = FindPatternAddress("ui.get_child_frame_id_anchor");
+    if (!Logger::AssertAddress("GetChildFrameId_Callsite", address, "ui")) {
+        return false;
+    }
+    g_get_child_frame_id_func = reinterpret_cast<GetChildFrameIdFn>(
+        PY4GW::Scanner::FunctionFromNearCall(address));
+    return Logger::AssertAddress("GetChildFrameId_Func", reinterpret_cast<uintptr_t>(g_get_child_frame_id_func), "ui");
+}
+
+inline bool ResolveFindRelatedFrame() {
+    CrashContextScope context("startup", "ui", "resolve_find_related_frame");
+    const uintptr_t address = FindPatternAddress("ui.find_related_frame");
+    if (!Logger::AssertAddress("FindRelatedFrame_Func", address, "ui")) {
+        return false;
+    }
+    g_find_related_frame_func = reinterpret_cast<FindRelatedFrameFn>(address);
+    return true;
+}
+
+inline bool ResolveGetRootFrame() {
+    CrashContextScope context("startup", "ui", "resolve_get_root_frame");
+    const uintptr_t address = FindPatternAddress("ui.get_root_frame");
+    g_get_root_frame_func = reinterpret_cast<GetRootFrameFn>(address);
+    return Logger::AssertAddress("GetRootFrame_Func", reinterpret_cast<uintptr_t>(g_get_root_frame_func), "ui");
+}
+
+inline bool ResolveSendUiMessage() {
+    CrashContextScope context("startup", "ui", "resolve_send_ui_message");
+    const uintptr_t address = FindPatternAddress("ui.send_ui_message");
+    if (!Logger::AssertAddress("SendUIMessage_Scan", address, "ui")) {
+        return false;
+    }
+    g_send_ui_message_func = reinterpret_cast<SendUIMessageFn>(PY4GW::Scanner::ToFunctionStart(address));
+    return Logger::AssertAddress("SendUIMessage_Func", reinterpret_cast<uintptr_t>(g_send_ui_message_func), "ui");
+}
+
+inline bool ResolveLoadSettings() {
+    CrashContextScope context("startup", "ui", "resolve_load_settings");
+    const uintptr_t address = FindPatternAddress("ui.load_settings");
+    if (!Logger::AssertAddress("LoadSettings_Callsite", address, "ui")) {
+        return false;
+    }
+    g_load_settings_func = reinterpret_cast<LoadSettingsFn>(PY4GW::Scanner::ToFunctionStart(address));
+    return Logger::AssertAddress("LoadSettings_Func", reinterpret_cast<uintptr_t>(g_load_settings_func), "ui");
+}
+
+inline bool ResolveUiDrawn() {
+    CrashContextScope context("startup", "ui", "resolve_ui_drawn");
+    const uintptr_t address = FindPatternAddress("ui.ui_drawn_anchor");
+    if (!Logger::AssertAddress("ui_drawn_ref", address, "ui")) {
+        return false;
+    }
+    g_ui_drawn_addr = *reinterpret_cast<uintptr_t*>(address) - 0x10;
+    return Logger::AssertAddress("ui_drawn_addr", g_ui_drawn_addr, "ui");
+}
+
+inline bool ResolveShiftScreenshot() {
+    CrashContextScope context("startup", "ui", "resolve_shift_screenshot");
+    const uintptr_t address = FindPatternAddress("ui.shift_screenshot");
+    if (!Logger::AssertAddress("shift_screen_ref", address, "ui")) {
+        return false;
+    }
+    const uintptr_t candidate = *reinterpret_cast<uintptr_t*>(address);
+    if (!Logger::AssertAddress("shift_screen_addr", candidate, "ui")) {
+        return false;
+    }
+    g_shift_screen_addr = candidate;
+    return true;
+}
+
+inline bool ResolveSetTooltip() {
+    CrashContextScope context("startup", "ui", "resolve_set_tooltip");
+    const uintptr_t address = FindPatternAddress("ui.set_tooltip");
+    if (!Logger::AssertAddress("SetTooltip_Func", address, "ui")) {
+        return false;
+    }
+    g_set_tooltip_func = reinterpret_cast<SetTooltipFn>(PY4GW::Scanner::ToFunctionStart(address));
+    const uintptr_t ptr_ref = reinterpret_cast<uintptr_t>(g_set_tooltip_func) + 0x9;
+    if (!Logger::AssertAddress("CurrentTooltipPtr_Ref", ptr_ref, "ui")) {
+        return false;
+    }
+    g_current_tooltip_ptr = reinterpret_cast<TooltipInfo***>(*reinterpret_cast<uintptr_t*>(ptr_ref));
+    const bool func_ok = Logger::AssertAddress("SetTooltip_Func", reinterpret_cast<uintptr_t>(g_set_tooltip_func), "ui");
+    const bool ptr_ok = Logger::AssertAddress("CurrentTooltipPtr", reinterpret_cast<uintptr_t>(g_current_tooltip_ptr), "ui");
+    return func_ok && ptr_ok;
+}
+
+inline bool ResolveGameSettings() {
+    CrashContextScope context("startup", "ui", "resolve_game_settings");
+    const uintptr_t address = FindPatternAddress("ui.game_settings_addr");
+    if (!Logger::AssertAddress("GameSettings_Ref", address, "ui")) {
+        return false;
+    }
+    g_game_settings_addr = *reinterpret_cast<uintptr_t*>(address);
+    return Logger::AssertAddress("GameSettings_Addr", g_game_settings_addr, "ui");
+}
+
+inline bool ResolveWindowHelpers() {
+    CrashContextScope context("startup", "ui", "resolve_window_helpers");
+    const uintptr_t address = FindPatternAddress("ui.set_window_visible");
+    if (!Logger::AssertAddress("SetWindowVisible_Func", address, "ui")) {
+        return false;
+    }
+    const uintptr_t func = PY4GW::Scanner::ToFunctionStart(address);
+    g_set_window_visible_func = reinterpret_cast<SetWindowVisibleFn>(func);
+    g_set_window_position_func = reinterpret_cast<SetWindowPositionFn>(func - 0xE0);
+    const uintptr_t array_ref = func + 0x49;
+    if (!Logger::AssertAddress("window_positions_ref", array_ref, "ui")) {
+        return false;
+    }
+    g_window_positions_array = *reinterpret_cast<WindowPosition**>(array_ref);
+    const bool visible_ok = Logger::AssertAddress("SetWindowPosition_Func", reinterpret_cast<uintptr_t>(g_set_window_position_func), "ui");
+    const bool array_ok = Logger::AssertAddress("window_positions_array", reinterpret_cast<uintptr_t>(g_window_positions_array), "ui");
+    return visible_ok && array_ok;
+}
+
+inline bool ResolveValidateAsyncDecode() {
+    CrashContextScope context("startup", "ui", "resolve_async_decode");
+    const uintptr_t address = FindPatternAddress("ui.validate_async_decode");
+    g_validate_async_decode_str_func = reinterpret_cast<ValidateAsyncDecodeStrFn>(PY4GW::Scanner::ToFunctionStart(address));
+    return Logger::AssertAddress("ValidateAsyncDecodeStr", reinterpret_cast<uintptr_t>(g_validate_async_decode_str_func), "ui");
+}
+
+inline bool ResolveTitleHelpers() {
+    CrashContextScope context("startup", "ui", "resolve_title_helpers");
+
+    uintptr_t get_title_addr = PY4GW::Scanner::FindAssertion(
+        "FrNonclient.cpp",
+        "ptr->title.Count()",
+        0,
+        -0x26);
+    if (get_title_addr) {
+        get_title_addr = PY4GW::Scanner::ToFunctionStart(get_title_addr, 0xFF);
+    }
+    if (!Logger::AssertAddress("GetTitle_Func", get_title_addr, "ui")) {
+        return false;
+    }
+    g_get_title_func = reinterpret_cast<GetTitleFn>(get_title_addr);
+
+    for (uintptr_t scan = get_title_addr; scan < get_title_addr + 0x100; ++scan) {
+        if (*reinterpret_cast<const uint8_t*>(scan) != 0xB9) {
+            continue;
+        }
+
+        g_title_table_addr = *reinterpret_cast<const uintptr_t*>(scan + 1);
+        if (!(g_title_table_addr &&
+            PY4GW::Scanner::IsValidPtr(g_title_table_addr, PY4GW::ScannerSection::Data))) {
+            g_title_table_addr = 0;
+            break;
+        }
+
+        for (uintptr_t callsite = scan + 5; callsite < get_title_addr + 0x100; ++callsite) {
+            if (*reinterpret_cast<const uint8_t*>(callsite) != 0xE8) {
+                continue;
+            }
+
+            const uintptr_t candidate = PY4GW::Scanner::FunctionFromNearCall(callsite, true);
+            if (candidate) {
+                g_title_binary_search_func = reinterpret_cast<TitleBinarySearchFn>(candidate);
+                break;
+            }
+        }
+        break;
+    }
+
+    const bool title_table_ok = Logger::AssertAddress("TitleTable_Addr", g_title_table_addr, "ui");
+    const bool title_search_ok = Logger::AssertAddress("TitleBinarySearch_Func", reinterpret_cast<uintptr_t>(g_title_binary_search_func), "ui");
+    return title_table_ok && title_search_ok;
+}
+
+inline bool ResolveDrawOnCompass() {
+    CrashContextScope context("startup", "ui", "resolve_draw_on_compass");
+    const uintptr_t address = FindPatternAddress("ui.draw_on_compass");
+    g_draw_on_compass_func = reinterpret_cast<DrawOnCompassFn>(PY4GW::Scanner::ToFunctionStart(address));
+    return Logger::AssertAddress("DrawOnCompass_Func", reinterpret_cast<uintptr_t>(g_draw_on_compass_func), "ui");
+}
+
+inline bool ResolveCreateUiComponent() {
+    CrashContextScope context("startup", "ui", "resolve_create_ui_component");
+    const uintptr_t create_address = FindPatternAddress("ui.create_ui_component");
+    if (!Logger::AssertAddress("CreateUIComponent_Scan", create_address, "ui")) {
+        return false;
+    }
+    g_create_ui_component_func = reinterpret_cast<CreateUIComponentFn>(PY4GW::Scanner::ToFunctionStart(create_address));
+    const uintptr_t destroy_address = FindPatternAddress("ui.destroy_ui_component");
+    if (destroy_address) {
+        g_destroy_ui_component_func = reinterpret_cast<DestroyUIComponentFn>(PY4GW::Scanner::ToFunctionStart(destroy_address));
+        if (!g_destroy_ui_component_func) {
+            Logger::Instance().LogWarning("DestroyUIComponent_Func could not be recovered from the resolved scan.", "ui");
+        }
+    } else {
+        Logger::Instance().LogWarning("DestroyUIComponent_Scan could not be resolved; continuing without destroy support.", "ui");
+    }
+    return Logger::AssertAddress("CreateUIComponent_Func", reinterpret_cast<uintptr_t>(g_create_ui_component_func), "ui");
+}
+
+inline bool ResolveFrameNewSubclass() {
+    CrashContextScope context("startup", "ui", "resolve_frame_new_subclass");
+
+    uintptr_t address = PY4GW::Scanner::FindAssertion(
+        "\\Code\\Engine\\Frame\\FrApi.cpp",
+        "frameId",
+        0x467,
+        0);
+    if (address) {
+        g_frame_new_subclass_func = reinterpret_cast<FrameNewSubclassFn>(PY4GW::Scanner::ToFunctionStart(address, 0x100));
+    }
+    if (!g_frame_new_subclass_func) {
+        address = PY4GW::Scanner::Find(
+            "\x8D\xB8\xA8\x00\x00\x00\x8B\xCF",
+            "xxxxxxxx",
+            -0x2D);
+        if (address) {
+            g_frame_new_subclass_func = reinterpret_cast<FrameNewSubclassFn>(address);
+        }
+    }
+
+    return Logger::AssertAddress("FrameNewSubclass_Func", reinterpret_cast<uintptr_t>(g_frame_new_subclass_func), "ui");
+}
+
+inline bool ResolveTypedComponentPassthrough() {
+    CrashContextScope context("startup", "ui", "resolve_typed_component_passthrough");
+    const uintptr_t address = FindPatternAddress("ui.typed_component_passthrough");
+    if (!Logger::AssertAddress("TypedComponentPassthrough_Scan", address, "ui")) {
+        return false;
+    }
+    g_typed_component_passthrough_func = reinterpret_cast<TypedComponentPassthroughFn>(PY4GW::Scanner::ToFunctionStart(address, 0xFFF));
+    return Logger::AssertAddress("TypedComponentPassthrough_Func", reinterpret_cast<uintptr_t>(g_typed_component_passthrough_func), "ui");
+}
+
+inline bool ResolvePreferenceReaders() {
+    CrashContextScope context("startup", "ui", "resolve_preference_readers");
+    const uintptr_t pref_init = FindPatternAddress("ui.preferences_initialized");
+    if (pref_init) {
+        g_preferences_initialized_addr = *reinterpret_cast<const uintptr_t*>(pref_init);
+        WarnIfMissingAddress("PreferencesInitialised_Addr", g_preferences_initialized_addr);
+    } else {
+        Logger::Instance().LogWarning("PreferencesInitialised_Ref is null.", "ui");
+    }
+
+    g_get_string_preference_func = reinterpret_cast<GetStringPreferenceFn>(
+        PY4GW::Scanner::ToFunctionStart(PY4GW::Scanner::FindUseOfString("pref < PREF_STRINGS", 0)));
+    g_get_flag_preference_func = reinterpret_cast<GetFlagPreferenceFn>(
+        PY4GW::Scanner::ToFunctionStart(PY4GW::Scanner::FindUseOfString("pref < PREF_FLAGS", 0)));
+    g_get_enum_preference_func = reinterpret_cast<GetEnumPreferenceFn>(
+        PY4GW::Scanner::ToFunctionStart(PY4GW::Scanner::FindUseOfString("pref < PREF_ENUMS", 0)));
+    g_get_number_preference_func = reinterpret_cast<GetNumberPreferenceFn>(
+        PY4GW::Scanner::ToFunctionStart(PY4GW::Scanner::FindUseOfString("pref < PREF_VALUES", 0)));
+
+    WarnIfMissingAddress("GetStringPreference_Func", reinterpret_cast<uintptr_t>(g_get_string_preference_func));
+    WarnIfMissingAddress("GetFlagPreference_Func", reinterpret_cast<uintptr_t>(g_get_flag_preference_func));
+    WarnIfMissingAddress("GetEnumPreference_Func", reinterpret_cast<uintptr_t>(g_get_enum_preference_func));
+    WarnIfMissingAddress("GetNumberPreference_Func", reinterpret_cast<uintptr_t>(g_get_number_preference_func));
+
+    const uintptr_t enum_info = FindPatternAddress("ui.enum_preference_info");
+    const uintptr_t value_info = FindPatternAddress("ui.number_preference_info");
+    if (enum_info) {
+        g_enum_preference_options_addr = *reinterpret_cast<EnumPreferenceInfo**>(enum_info);
+        WarnIfMissingAddress("EnumPreferenceOptions_Addr", reinterpret_cast<uintptr_t>(g_enum_preference_options_addr));
+    } else {
+        Logger::Instance().LogWarning("EnumPreferenceOptions_Ref is null.", "ui");
+    }
+    if (value_info) {
+        g_number_preference_options_addr = *reinterpret_cast<NumberPreferenceInfo**>(value_info);
+        WarnIfMissingAddress("NumberPreferenceOptions_Addr", reinterpret_cast<uintptr_t>(g_number_preference_options_addr));
+    } else {
+        Logger::Instance().LogWarning("NumberPreferenceOptions_Ref is null.", "ui");
+    }
+    return true;
+}
+
+inline bool ResolvePreferenceWriters() {
+    CrashContextScope context("startup", "ui", "resolve_preference_writers");
+
+    const uintptr_t set_string_anchor = FindPatternAddress("ui.set_string_preference");
+    if (set_string_anchor) {
+        g_set_string_preference_func = reinterpret_cast<SetStringPreferenceFn>(PY4GW::Scanner::FunctionFromNearCall(set_string_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetStringPreference_Anchor is null.", "ui");
+    }
+
+    const uintptr_t quality_anchor = FindPatternAddress("ui.preference_quality_anchor");
+    if (quality_anchor) {
+        g_set_enum_preference_func = reinterpret_cast<SetEnumPreferenceFn>(PY4GW::Scanner::FunctionFromNearCall(quality_anchor - 0x8D));
+        g_set_flag_preference_func = reinterpret_cast<SetFlagPreferenceFn>(PY4GW::Scanner::FunctionFromNearCall(quality_anchor - 0x3B));
+        g_set_number_preference_func = reinterpret_cast<SetNumberPreferenceFn>(PY4GW::Scanner::FunctionFromNearCall(quality_anchor - 0x6A));
+        g_set_in_game_static_preference_func = reinterpret_cast<SetInGameStaticPreferenceFn>(PY4GW::Scanner::FunctionFromNearCall(quality_anchor - 0xFF));
+        g_trigger_terrain_rerender_func = reinterpret_cast<TriggerTerrainRerenderFn>(PY4GW::Scanner::FunctionFromNearCall(quality_anchor - 0x36));
+    } else {
+        Logger::Instance().LogWarning("PreferenceQuality_Anchor is null.", "ui");
+    }
+
+    const uintptr_t shadow_anchor = FindPatternAddress("ui.set_in_game_shadow_quality");
+    if (shadow_anchor) {
+        g_set_in_game_shadow_quality_func = reinterpret_cast<SetInGameShadowQualityFn>(PY4GW::Scanner::ToFunctionStart(shadow_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetInGameShadowQuality_Anchor is null.", "ui");
+    }
+
+    const uintptr_t ui_scale_anchor = FindPatternAddress("ui.set_in_game_ui_scale");
+    if (ui_scale_anchor) {
+        g_set_in_game_ui_scale_func = reinterpret_cast<SetInGameUIScaleFn>(PY4GW::Scanner::FunctionFromNearCall(ui_scale_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetInGameUIScale_Anchor is null.", "ui");
+    }
+
+    const uintptr_t volume_anchor = FindPatternAddress("ui.set_volume");
+    if (volume_anchor) {
+        g_set_volume_func = reinterpret_cast<SetVolumeFn>(PY4GW::Scanner::ToFunctionStart(volume_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetVolume_Anchor is null.", "ui");
+    }
+
+    const uintptr_t master_volume_anchor = FindPatternAddress("ui.set_master_volume");
+    if (master_volume_anchor) {
+        g_set_master_volume_func = reinterpret_cast<SetMasterVolumeFn>(PY4GW::Scanner::ToFunctionStart(master_volume_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetMasterVolume_Anchor is null.", "ui");
+    }
+
+    const uintptr_t get_renderer_anchor = FindPatternAddress("ui.get_graphics_renderer_value");
+    if (get_renderer_anchor) {
+        g_get_graphics_renderer_value_func = reinterpret_cast<GetGraphicsRendererValueFn>(PY4GW::Scanner::FunctionFromNearCall(get_renderer_anchor));
+    } else {
+        Logger::Instance().LogWarning("GetGraphicsRendererValue_Anchor is null.", "ui");
+    }
+
+    const uintptr_t set_renderer_anchor = FindPatternAddress("ui.set_graphics_renderer_value");
+    if (set_renderer_anchor) {
+        g_set_graphics_renderer_value_func = reinterpret_cast<SetGraphicsRendererValueFn>(PY4GW::Scanner::ToFunctionStart(set_renderer_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetGraphicsRendererValue_Anchor is null.", "ui");
+    }
+
+    const uintptr_t set_game_renderer_mode_anchor = FindPatternAddress("ui.set_game_renderer_mode");
+    if (set_game_renderer_mode_anchor) {
+        g_set_game_renderer_mode_func = reinterpret_cast<SetGameRendererModeFn>(PY4GW::Scanner::FunctionFromNearCall(set_game_renderer_mode_anchor));
+    } else {
+        Logger::Instance().LogWarning("SetGameRendererMode_Anchor is null.", "ui");
+    }
+
+    const uintptr_t game_renderer_metrics_anchor = FindPatternAddress("ui.game_renderer_metrics");
+    if (game_renderer_metrics_anchor) {
+        g_get_game_renderer_mode_func = reinterpret_cast<GetGameRendererModeFn>(PY4GW::Scanner::FunctionFromNearCall(game_renderer_metrics_anchor - 0x1D));
+        g_get_game_renderer_metric_func = reinterpret_cast<GetGameRendererMetricFn>(PY4GW::Scanner::FunctionFromNearCall(game_renderer_metrics_anchor - 0x5));
+    } else {
+        Logger::Instance().LogWarning("GameRendererMetrics_Anchor is null.", "ui");
+    }
+
+    const uintptr_t command_line_number_anchor = FindPatternAddress("ui.command_line_number");
+    if (command_line_number_anchor) {
+        g_command_line_number_buffer = *reinterpret_cast<uint32_t**>(command_line_number_anchor + 0x29);
+        if (g_command_line_number_buffer) {
+            g_command_line_number_buffer += 0x30;
+        }
+    } else {
+        Logger::Instance().LogWarning("CommandLineNumber_Anchor is null.", "ui");
+    }
+    WarnIfMissingAddress("SetStringPreference_Func", reinterpret_cast<uintptr_t>(g_set_string_preference_func));
+    WarnIfMissingAddress("SetEnumPreference_Func", reinterpret_cast<uintptr_t>(g_set_enum_preference_func));
+    WarnIfMissingAddress("SetFlagPreference_Func", reinterpret_cast<uintptr_t>(g_set_flag_preference_func));
+    WarnIfMissingAddress("SetNumberPreference_Func", reinterpret_cast<uintptr_t>(g_set_number_preference_func));
+    WarnIfMissingAddress("SetInGameStaticPreference_Func", reinterpret_cast<uintptr_t>(g_set_in_game_static_preference_func));
+    WarnIfMissingAddress("TriggerTerrainRerender_Func", reinterpret_cast<uintptr_t>(g_trigger_terrain_rerender_func));
+    WarnIfMissingAddress("SetInGameShadowQuality_Func", reinterpret_cast<uintptr_t>(g_set_in_game_shadow_quality_func));
+    WarnIfMissingAddress("SetInGameUIScale_Func", reinterpret_cast<uintptr_t>(g_set_in_game_ui_scale_func));
+    WarnIfMissingAddress("SetVolume_Func", reinterpret_cast<uintptr_t>(g_set_volume_func));
+    WarnIfMissingAddress("SetMasterVolume_Func", reinterpret_cast<uintptr_t>(g_set_master_volume_func));
+    WarnIfMissingAddress("GetGraphicsRendererValue_Func", reinterpret_cast<uintptr_t>(g_get_graphics_renderer_value_func));
+    WarnIfMissingAddress("SetGraphicsRendererValue_Func", reinterpret_cast<uintptr_t>(g_set_graphics_renderer_value_func));
+    WarnIfMissingAddress("SetGameRendererMode_Func", reinterpret_cast<uintptr_t>(g_set_game_renderer_mode_func));
+    WarnIfMissingAddress("GetGameRendererMode_Func", reinterpret_cast<uintptr_t>(g_get_game_renderer_mode_func));
+    WarnIfMissingAddress("GetGameRendererMetric_Func", reinterpret_cast<uintptr_t>(g_get_game_renderer_metric_func));
+    WarnIfMissingAddress("CommandLineNumber_Buffer", reinterpret_cast<uintptr_t>(g_command_line_number_buffer));
+
+    return true;
+}
+
+inline bool ResolveCommandLineFunctions() {
+    CrashContextScope context("startup", "ui", "resolve_command_line_functions");
+
+    const uintptr_t address = FindPatternAddress("ui.build_login_struct_callsite");
+    if (!address) {
+        Logger::Instance().LogWarning("BuildLoginStruct_Callsite is null.", "ui");
+        return false;
+    }
+    const uintptr_t login_func = PY4GW::Scanner::FunctionFromNearCall(address);
+    if (login_func) {
+        g_get_command_line_flag_func = reinterpret_cast<GetFlagPreferenceFn>(
+            PY4GW::Scanner::FunctionFromNearCall(login_func + 0xF));
+        g_get_command_line_string_func = reinterpret_cast<GetStringPreferenceFn>(
+            PY4GW::Scanner::FunctionFromNearCall(login_func + 0x32));
+    }
+    WarnIfMissingAddress("GetCommandLineFlag_Func", reinterpret_cast<uintptr_t>(g_get_command_line_flag_func));
+    WarnIfMissingAddress("GetCommandLineString_Func", reinterpret_cast<uintptr_t>(g_get_command_line_string_func));
+    return true;
+}
+
+inline bool TryResolveTypedComponentCallbacks() {
+    CrashContextScope context("runtime", "ui", "resolve_typed_component_callbacks");
+    if (g_typed_component_callbacks_initialized) {
+        return true;
+    }
+
+    const uintptr_t button_addr = FindPatternAddress("ui.button_frame_callback");
+    if (button_addr) {
+        g_button_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(button_addr, 0xFF));
+    }
+
+    const uintptr_t ctl_btn_addr = FindPatternAddress("ui.ctl_button_proc_callback");
+    if (ctl_btn_addr) {
+        g_ctl_button_proc_callback = reinterpret_cast<UIInteractionCallback>(ctl_btn_addr);
+    }
+
+    const uintptr_t text_btn_addr = FindPatternAddress("ui.text_button_frame_callback");
+    if (text_btn_addr) {
+        g_text_button_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(text_btn_addr, 0x20));
+    }
+
+    const uintptr_t text_label_addr = FindPatternAddress("ui.text_label_frame_callback");
+    if (text_label_addr) {
+        g_text_label_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(text_label_addr, 0xFFF));
+    }
+
+    const uintptr_t scrollable_addr = FindPatternAddress("ui.scrollable_frame_callback");
+    if (scrollable_addr) {
+        g_scrollable_frame_callback = reinterpret_cast<UIInteractionCallback>(*reinterpret_cast<const uintptr_t*>(scrollable_addr));
+    }
+
+    const uintptr_t frame_list_addr = FindPatternAddress("ui.frame_list_callback");
+    if (frame_list_addr) {
+        g_frame_list_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(frame_list_addr, 0xFFF));
+    }
+
+    const uintptr_t dropdown_addr = FindPatternAddress("ui.dropdown_frame_callback");
+    if (dropdown_addr) {
+        g_dropdown_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(dropdown_addr, 0xFFF));
+    }
+
+    const uintptr_t slider_addr = FindPatternAddress("ui.slider_frame_callback");
+    if (slider_addr) {
+        g_slider_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(slider_addr, 0xFFF));
+    }
+
+    const uintptr_t slider_wrapper_addr = FindPatternAddress("ui.slider_frame_wrapper_callback");
+    if (slider_wrapper_addr) {
+        g_slider_frame_wrapper_callback = reinterpret_cast<UIInteractionCallback>(slider_wrapper_addr);
+    }
+
+    const uintptr_t editable_addr = FindPatternAddress("ui.editable_text_frame_callback");
+    if (editable_addr) {
+        g_editable_text_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(editable_addr, 0xFFF));
+    }
+
+    const uintptr_t progress_addr = FindPatternAddress("ui.progress_bar_callback");
+    if (progress_addr) {
+        g_progress_bar_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(progress_addr, 0xFFF));
+    }
+
+    const uintptr_t tabs_addr = FindPatternAddress("ui.tabs_frame_callback");
+    if (tabs_addr) {
+        g_tabs_frame_callback = reinterpret_cast<UIInteractionCallback>(PY4GW::Scanner::ToFunctionStart(tabs_addr, 0xFFF));
+    }
+
+    g_typed_component_callbacks_initialized = true;
+    return true;
+}
+
+bool Init();
+void EnableHooks();
+void DisableHooks();
+void Exit();
+bool WaitForUiHooksToDrain();
+
+void __cdecl OnSendUIMessage(UIMessage message_id, void* wparam, void* lparam);
+void OnOpenTemplateUiMessage(PY4GW::HookStatus* hook_status, UIMessage msgid, void* wparam, void*);
+void __cdecl OnSendFrameUIMessageById(uint32_t frame_id, UIMessage message_id, void* wparam, void* lparam);
+void __fastcall OnSendFrameUIMessage(GW::GWArray<UIInteractionCallback>* frame_callbacks, void*, UIMessage message_id, void* wparam, void* lparam);
+uint32_t __cdecl OnCreateUIComponent(uint32_t frame_id, uint32_t component_flags, uint32_t tab_index, void* event_callback, wchar_t* name_enc, wchar_t* component_label);
 
 }  // namespace GW::ui

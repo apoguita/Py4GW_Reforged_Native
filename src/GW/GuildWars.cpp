@@ -6,199 +6,93 @@
 #include "base/logger.h"
 #include "base/memory_manager.h"
 #include "base/memory_patcher.h"
+#include "GW/agent/agent.h"
 #include "GW/camera/camera.h"
+#include "GW/chat/chat.h"
 #include "GW/context/context.h"
 #include "GW/effects/effects.h"
 #include "GW/events/events.h"
 #include "GW/friend_list/friend_list.h"
 #include "GW/game_thread/game_thread.h"
 #include "GW/guild/guild.h"
+#include "GW/item/item.h"
 #include "GW/map/map.h"
+#include "GW/merchant/merchant.h"
+#include "GW/party/party.h"
 #include "GW/player/player.h"
 #include "GW/quest/quest.h"
 #include "GW/render/render.h"
+#include "GW/skillbar/skillbar.h"
 #include "GW/stoc/stoc.h"
+#include "GW/trade/trade.h"
 #include "GW/ui/ui.h"
+
+#include <array>
+
+namespace {
+
+struct InitStep {
+    const char* module;
+    const char* operation;
+    bool (*initialize)();
+    void (*shutdown)();
+};
+
+bool ScanMemoryManager() {
+    return PY4GW::MemoryManager::Scan();
+}
+
+void ShutdownMemoryManager() {
+}
+
+constexpr std::array<InitStep, 21> kInitSteps = {{
+    {"game_thread", "initialize", &GW::game_thread::Initialize, &GW::game_thread::Shutdown},
+    {"stoc", "initialize", &GW::StoC::Initialize, &GW::StoC::Shutdown},
+    {"render", "initialize", &GW::render::Initialize, &GW::render::Shutdown},
+    {"ui", "initialize", &GW::ui::Initialize, &GW::ui::Shutdown},
+    {"camera", "initialize", &GW::camera::Initialize, &GW::camera::Shutdown},
+    {"memory_manager", "scan", &ScanMemoryManager, &ShutdownMemoryManager},
+    {"context", "initialize", &GW::Context::Initialize, &GW::Context::Shutdown},
+    {"effects", "initialize", &GW::effects::Initialize, &GW::effects::Shutdown},
+    {"events", "initialize", &GW::events::Initialize, &GW::events::Shutdown},
+    {"friend_list", "initialize", &GW::friend_list::Initialize, &GW::friend_list::Shutdown},
+    {"player", "initialize", &GW::player::Initialize, &GW::player::Shutdown},
+    {"agent", "initialize", &GW::agent::Initialize, &GW::agent::Shutdown},
+    {"quest", "initialize", &GW::quest::Initialize, &GW::quest::Shutdown},
+    {"map", "initialize", &GW::map::Initialize, &GW::map::Shutdown},
+    {"guild", "initialize", &GW::guild::Initialize, &GW::guild::Shutdown},
+    {"chat", "initialize", &GW::chat::Initialize, &GW::chat::Shutdown},
+    {"item", "initialize", &GW::item::Initialize, &GW::item::Shutdown},
+    {"trade", "initialize", &GW::trade::Initialize, &GW::trade::Shutdown},
+    {"merchant", "initialize", &GW::merchant::Initialize, &GW::merchant::Shutdown},
+    {"skillbar", "initialize", &GW::skillbar::Initialize, &GW::skillbar::Shutdown},
+    {"party", "initialize", &GW::party::Initialize, &GW::party::Shutdown},
+}};
+
+void ShutdownInitializedSteps(size_t count) {
+    for (size_t i = count; i > 0; --i) {
+        const auto& step = kInitSteps[i - 1];
+        CrashHandler::SetContext("shutdown", step.module, "shutdown");
+        Logger::Instance().LogInfo(std::string("[gw] Shutting down ") + step.module + ".");
+        step.shutdown();
+    }
+}
+
+}
 
 namespace GW {
 
 bool Initialize() {
-    CrashHandler::SetContext("startup", "game_thread", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing game_thread.");
-    PY4GW_ASSERT(game_thread::Initialize());
-
-    CrashHandler::SetContext("startup", "stoc", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing stoc.");
-    if (!StoC::Initialize()) {
-        Logger::Instance().LogError("[gw] stoc initialization failed.");
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "render", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing render.");
-    if (!render::Initialize()) {
-        Logger::Instance().LogError("[gw] render initialization failed.");
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "ui", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing ui.");
-    if (!ui::Initialize()) {
-        Logger::Instance().LogError("[gw] ui initialization failed.");
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "camera", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing camera.");
-    if (!camera::Initialize()) {
-        Logger::Instance().LogError("[gw] camera initialization failed.");
-        ui::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "memory_manager", "scan");
-    Logger::Instance().LogInfo("[gw] Scanning memory manager.");
-    if (!PY4GW::MemoryManager::Scan()) {
-        Logger::Instance().LogError("[gw] memory manager scan failed.");
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "context", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing context.");
-    if (!Context::Initialize()) {
-        Logger::Instance().LogError("[gw] context initialization failed.");
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "effects", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing effects.");
-    if (!effects::Initialize()) {
-        Logger::Instance().LogError("[gw] effects initialization failed.");
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "events", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing events.");
-    if (!events::Initialize()) {
-        Logger::Instance().LogError("[gw] events initialization failed.");
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "friend_list", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing friend_list.");
-    if (!friend_list::Initialize()) {
-        Logger::Instance().LogError("[gw] friend_list initialization failed.");
-        events::Shutdown();
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "player", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing player.");
-    if (!player::Initialize()) {
-        Logger::Instance().LogError("[gw] player initialization failed.");
-        friend_list::Shutdown();
-        events::Shutdown();
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "quest", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing quest.");
-    if (!quest::Initialize()) {
-        Logger::Instance().LogError("[gw] quest initialization failed.");
-        player::Shutdown();
-        friend_list::Shutdown();
-        events::Shutdown();
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "map", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing map.");
-    if (!map::Initialize()) {
-        Logger::Instance().LogError("[gw] map initialization failed.");
-        quest::Shutdown();
-        player::Shutdown();
-        friend_list::Shutdown();
-        events::Shutdown();
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
-    }
-
-    CrashHandler::SetContext("startup", "guild", "initialize");
-    Logger::Instance().LogInfo("[gw] Initializing guild.");
-    if (!guild::Initialize()) {
-        Logger::Instance().LogError("[gw] guild initialization failed.");
-        map::Shutdown();
-        quest::Shutdown();
-        player::Shutdown();
-        friend_list::Shutdown();
-        events::Shutdown();
-        effects::Shutdown();
-        Context::Shutdown();
-        ui::Shutdown();
-        camera::Shutdown();
-        render::Shutdown();
-        StoC::Shutdown();
-        game_thread::Shutdown();
-        return false;
+    size_t initialized_steps = 0;
+    for (const auto& step : kInitSteps) {
+        CrashHandler::SetContext("startup", step.module, step.operation);
+        Logger::Instance().LogInfo(std::string("[gw] Initializing ") + step.module + ".");
+        if (!step.initialize()) {
+            Logger::Instance().LogError(std::string("[gw] ") + step.module + " initialization failed.");
+            ShutdownInitializedSteps(initialized_steps);
+            return false;
+        }
+        ++initialized_steps;
     }
 
     CrashHandler::SetContext("startup", "memory_patcher", "enable_hooks");
@@ -210,48 +104,10 @@ bool Initialize() {
 }
 
 void Shutdown() {
-    CrashHandler::SetContext("shutdown", "guild", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down guild.");
-    guild::Shutdown();
-    CrashHandler::SetContext("shutdown", "map", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down map.");
-    map::Shutdown();
-    CrashHandler::SetContext("shutdown", "quest", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down quest.");
-    quest::Shutdown();
-    CrashHandler::SetContext("shutdown", "player", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down player.");
-    player::Shutdown();
-    CrashHandler::SetContext("shutdown", "events", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down events.");
-    events::Shutdown();
-    CrashHandler::SetContext("shutdown", "friend_list", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down friend_list.");
-    friend_list::Shutdown();
-    CrashHandler::SetContext("shutdown", "effects", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down effects.");
-    effects::Shutdown();
-    CrashHandler::SetContext("shutdown", "context", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down context.");
-    Context::Shutdown();
-    CrashHandler::SetContext("shutdown", "render", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down render.");
-    render::Shutdown();
-    CrashHandler::SetContext("shutdown", "stoc", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down stoc.");
-    StoC::Shutdown();
-    CrashHandler::SetContext("shutdown", "ui", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down ui.");
-    ui::Shutdown();
-    CrashHandler::SetContext("shutdown", "camera", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down camera.");
-    camera::Shutdown();
     CrashHandler::SetContext("shutdown", "memory_patcher", "disable_hooks");
     Logger::Instance().LogInfo("[gw] Disabling memory patcher hooks.");
     PY4GW::MemoryPatcher::DisableHooks();
-    CrashHandler::SetContext("shutdown", "game_thread", "shutdown");
-    Logger::Instance().LogInfo("[gw] Shutting down game_thread.");
-    game_thread::Shutdown();
+    ShutdownInitializedSteps(kInitSteps.size());
     CrashHandler::SetContext("shutdown", "gw", "shutdown_complete");
 }
 

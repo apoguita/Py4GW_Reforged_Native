@@ -1,0 +1,30 @@
+{
+  "namespace": "skillbar",
+  "patterns": {
+    "skill_array_ref": {
+      "pattern": "\\xE8\\x00\\x00\\x00\\x00\\x33\\xC9\\x56",
+      "mask": "x????xxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "attribute_array_ref": {
+      "pattern": "\\xba\\x33\\x00\\x00\\x00\\x89\\x08\\x8d\\x40\\x04",
+      "mask": "x?xxxxxxxx",
+      "offset": "-4",
+      "section": "text"
+    },
+    "use_skill_func_callsite": {
+      "pattern": "\\x85\\xF6\\x74\\x5B\\x83\\xFE\\x11\\x74",
+      "mask": "xxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "templates_helpers_assertion": {
+      "assertion_file": "TemplatesHelpers.cpp",
+      "assertion_message": "targetPrimaryProf == templateData.profPrimary",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    }
+  }
+}

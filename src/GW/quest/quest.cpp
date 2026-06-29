@@ -3,71 +3,98 @@
 #include "GW/quest/quest.h"
 
 #include "base/CrashHandler.h"
+#include "base/hooker.h"
 #include "base/logger.h"
-#include "base/patterns.h"
 #include "base/scanner.h"
+#include "GW/ui/ui.h"
+
+namespace GW::quest {
+
+RequestQuestInfoFn g_request_quest_info_func = nullptr;
+RequestQuestDataFn g_request_quest_data_func = nullptr;
+uintptr_t g_request_quest_data_callsite = 0;
+DoActionFn g_set_active_quest_func = nullptr;
+DoActionFn g_set_active_quest_ret = nullptr;
+DoActionFn g_abandon_quest_func = nullptr;
+DoActionFn g_abandon_quest_ret = nullptr;
+PY4GW::HookEntry g_set_active_quest_hook_entry;
+PY4GW::HookEntry g_abandon_quest_hook_entry;
+std::atomic<bool> g_initialized = false;
 
 namespace {
 
-bool ResolveRequestQuestFunctions() {
-    CrashContextScope context("startup", "quest", "resolve_request_quest_functions");
-    const auto* anchor_pattern = PY4GW::Patterns::Get("quest.request_anchor");
-    const auto* call_pattern = PY4GW::Patterns::Get("quest.request_data_call");
-    if (!anchor_pattern || !call_pattern) {
-        Logger::Instance().LogError("Missing or invalid quest request pattern.", "quest");
-        return false;
-    }
-
-    const uintptr_t anchor = PY4GW::Scanner::Find(
-        anchor_pattern->pattern.c_str(),
-        anchor_pattern->mask.c_str(),
-        anchor_pattern->offset,
-        anchor_pattern->section);
-    if (!Logger::AssertAddress("RequestQuest_Anchor", anchor, "quest")) {
-        return false;
-    }
-
-    const uintptr_t callsite = PY4GW::Scanner::FindInRange(
-        call_pattern->pattern.c_str(),
-        call_pattern->mask.c_str(),
-        call_pattern->offset,
-        anchor,
-        anchor + anchor_pattern->range);
-    if (!Logger::AssertAddress("RequestQuestData_Callsite", callsite, "quest")) {
-        return false;
-    }
-
-    GW::quest::g_request_quest_data_func = reinterpret_cast<GW::quest::RequestQuestDataFn>(
-        PY4GW::Scanner::FunctionFromNearCall(callsite));
-    if (!Logger::AssertAddress(
-            "RequestQuestData_Func",
-            reinterpret_cast<uintptr_t>(GW::quest::g_request_quest_data_func),
-            "quest")) {
-        return false;
-    }
-
-    GW::quest::g_request_quest_info_func = reinterpret_cast<GW::quest::RequestQuestInfoFn>(
-        PY4GW::Scanner::ToFunctionStart(anchor, 0xFF));
-    return Logger::AssertAddress(
-        "RequestQuestInfo_Func",
-        reinterpret_cast<uintptr_t>(GW::quest::g_request_quest_info_func),
-        "quest");
+void OnSetActiveQuest(uint32_t quest_id) {
+    ui::SendUIMessage(ui::UIMessage::kSendSetActiveQuest, reinterpret_cast<void*>(static_cast<uintptr_t>(quest_id)));
 }
 
-bool Init() {
-    CrashContextScope context("startup", "quest", "init");
-    return ResolveRequestQuestFunctions();
+void OnSetActiveQuest_UIMessage(PY4GW::HookStatus* status, ui::UIMessage message_id, void* wparam, void*) {
+    if (!status->blocked) {
+        g_set_active_quest_ret(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(wparam)));
+    }
 }
 
-void Exit() {
-    CrashContextScope context("shutdown", "quest", "exit");
-    GW::quest::g_request_quest_info_func = nullptr;
-    GW::quest::g_request_quest_data_func = nullptr;
+void OnAbandonQuest(uint32_t quest_id) {
+    ui::SendUIMessage(ui::UIMessage::kSendAbandonQuest, reinterpret_cast<void*>(static_cast<uintptr_t>(quest_id)));
+}
+
+void OnAbandonQuest_UIMessage(PY4GW::HookStatus* status, ui::UIMessage message_id, void* wparam, void*) {
+    if (!status->blocked) {
+        g_abandon_quest_ret(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(wparam)));
+    }
 }
 
 }  // namespace
 
-namespace GW::quest {
+bool Init() {
+    CrashContextScope context("startup", "quest", "init");
+    return ResolveRequestQuestFunctions() &&
+        ResolveSetActiveQuestAndAbandon();
+}
+
+void EnableHooks() {
+    if (g_abandon_quest_func) {
+        PY4GW::HookBase::CreateHook(
+            reinterpret_cast<void**>(&g_abandon_quest_func),
+            reinterpret_cast<void*>(&OnAbandonQuest),
+            reinterpret_cast<void**>(&g_abandon_quest_ret));
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_abandon_quest_func));
+        ui::RegisterUIMessageCallback(&g_abandon_quest_hook_entry, ui::UIMessage::kSendAbandonQuest, OnAbandonQuest_UIMessage, 0x1);
+    }
+    if (g_set_active_quest_func) {
+        PY4GW::HookBase::CreateHook(
+            reinterpret_cast<void**>(&g_set_active_quest_func),
+            reinterpret_cast<void*>(&OnSetActiveQuest),
+            reinterpret_cast<void**>(&g_set_active_quest_ret));
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_set_active_quest_func));
+        ui::RegisterUIMessageCallback(&g_set_active_quest_hook_entry, ui::UIMessage::kSendSetActiveQuest, OnSetActiveQuest_UIMessage, 0x1);
+    }
+}
+
+void DisableHooks() {
+    if (g_abandon_quest_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_abandon_quest_func));
+    }
+    if (g_set_active_quest_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_set_active_quest_func));
+    }
+}
+
+void Exit() {
+    CrashContextScope context("shutdown", "quest", "exit");
+    if (g_abandon_quest_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_abandon_quest_func));
+    }
+    if (g_set_active_quest_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_set_active_quest_func));
+    }
+    g_request_quest_info_func = nullptr;
+    g_request_quest_data_func = nullptr;
+    g_request_quest_data_callsite = 0;
+    g_set_active_quest_func = nullptr;
+    g_set_active_quest_ret = nullptr;
+    g_abandon_quest_func = nullptr;
+    g_abandon_quest_ret = nullptr;
+}
 
 bool Initialize() {
     CrashContextScope context("startup", "quest", "initialize");
@@ -83,6 +110,7 @@ bool Initialize() {
         return false;
     }
 
+    EnableHooks();
     g_initialized = true;
     return true;
 }
@@ -93,6 +121,7 @@ void Shutdown() {
         return;
     }
 
+    DisableHooks();
     Exit();
     g_initialized = false;
 }

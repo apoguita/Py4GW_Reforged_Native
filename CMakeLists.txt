@@ -59,12 +59,12 @@ target_compile_definitions(imgui
 )
 target_link_libraries(imgui PUBLIC d3d9.lib)
 
+file(GLOB_RECURSE PY4GW_IMGUI_ADDON_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/*.cpp
+)
+
 set(IMGUI_ADDON_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/filebrowser_demo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/hotkey_demo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/markdown_demo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/imanim_demo.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/imgui_club_demo.cpp
+    ${PY4GW_IMGUI_ADDON_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/addons/ImAnim/im_anim.cpp
 )
 
@@ -93,20 +93,8 @@ file(GLOB_RECURSE PY4GW_ALL_SOURCE_FILES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
-# imgui_addons owns these sources; keep them out of the main DLL target.
-set(PY4GW_NON_TARGET_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/GW/context/agent.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/GW/context/party.cpp
-)
-
 set(PY4GW_SOURCES ${PY4GW_ALL_SOURCE_FILES})
-list(FILTER PY4GW_SOURCES EXCLUDE REGEX ".*/src/imgui/addons/.*\\.cpp$")
-
-foreach(non_target_source IN LISTS PY4GW_NON_TARGET_SOURCES)
-    list(REMOVE_ITEM PY4GW_SOURCES ${non_target_source})
-endforeach()
-
-set_source_files_properties(${PY4GW_NON_TARGET_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)
+list(REMOVE_ITEM PY4GW_SOURCES ${PY4GW_IMGUI_ADDON_SOURCES})
 
 file(GLOB_RECURSE PY4GW_HEADERS CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
@@ -116,10 +104,11 @@ file(GLOB_RECURSE PY4GW_HEADERS CONFIGURE_DEPENDS
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${IMGUI_SOURCES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PY4GW_IMGUI_ADDON_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PY4GW_ALL_SOURCE_FILES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PY4GW_HEADERS})
 
-add_library(Py4GW SHARED ${PY4GW_SOURCES} ${PY4GW_HEADERS} ${PY4GW_NON_TARGET_SOURCES})
+add_library(Py4GW SHARED ${PY4GW_SOURCES} ${PY4GW_HEADERS})
 
 set_target_properties(Py4GW PROPERTIES
     OUTPUT_NAME "Py4GW"

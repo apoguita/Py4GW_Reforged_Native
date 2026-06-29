@@ -8,25 +8,6 @@
 
 namespace GW::render {
 
-GwDxContext* g_dx_context = nullptr;
-uintptr_t g_window_handle_ptr = 0;
-EndSceneFn g_end_scene_func = nullptr;
-EndSceneFn g_end_scene_original = nullptr;
-ResetFn g_reset_func = nullptr;
-ResetFn g_reset_original = nullptr;
-GetTransformFn g_get_transform_func = nullptr;
-
-CRITICAL_SECTION g_render_lock;
-std::atomic<int> g_active_render_hooks = 0;
-std::atomic<bool> g_in_render_loop = false;
-bool g_render_lock_initialized = false;
-bool g_hooks_enabled = false;
-std::atomic<bool> g_initialized = false;
-std::atomic<bool> g_shutting_down = false;
-
-RenderCallback g_render_callback = nullptr;
-RenderCallback g_reset_callback = nullptr;
-
 HWND GetWindowHandle() {
     return g_window_handle_ptr ? *reinterpret_cast<HWND*>(g_window_handle_ptr) : nullptr;
 }

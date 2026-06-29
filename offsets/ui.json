@@ -293,6 +293,12 @@
       "line_number": "0",
       "offset": "0x0",
       "section": "text"
+    },
+    "build_login_struct_callsite": {
+      "pattern": "\\x8D\\x85\\x04\\xFB\\xFF\\xFF\\x50\\xE8",
+      "mask": "xxxxxxxx",
+      "offset": "0x7",
+      "section": "text"
     }
   }
 }

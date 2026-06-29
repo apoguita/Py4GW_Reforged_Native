@@ -7,12 +7,6 @@
 
 namespace GW::effects {
 
-PostProcessEffectFn g_post_process_effect_func = nullptr;
-PostProcessEffectFn g_post_process_effect_original = nullptr;
-DropBuffFn g_drop_buff_func = nullptr;
-std::atomic<uint32_t> g_alcohol_level = 0;
-std::atomic<bool> g_initialized = false;
-
 uint32_t GetAlcoholLevel() {
     return g_alcohol_level.load();
 }

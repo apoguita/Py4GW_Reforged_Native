@@ -4,11 +4,6 @@
 
 namespace GW::camera {
 
-Context::Camera* g_camera = nullptr;
-PY4GW::MemoryPatcher g_patch_cam_update = {};
-PY4GW::MemoryPatcher g_patch_fog = {};
-std::atomic<bool> g_initialized = false;
-
 Context::Camera* GetCamera() {
     return g_camera;
 }

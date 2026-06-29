@@ -1,0 +1,86 @@
+{
+  "namespace": "chat",
+  "patterns": {
+    "get_sender_color_func": {
+      "pattern": "\\xC7\\x00\\x60\\xC0\\xFF\\xFF\\x5D\\xC3",
+      "mask": "xxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "get_message_color_func": {
+      "pattern": "\\xC7\\x00\\xB0\\xB0\\xB0\\xFF\\x5D\\xC3",
+      "mask": "xxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "send_chat_func": {
+      "pattern": "\\x8D\\x85\\xE0\\xFE\\xFF\\xFF\\x50\\x68\\x1C\\x01",
+      "mask": "xxxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "start_whisper_func": {
+      "pattern": "\\xFC\\x53\\x56\\x8B\\xF1\\x57\\x6A\\x01\\xFF\\x36\\xE8",
+      "mask": "xxxxxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "add_to_chat_log_func": {
+      "pattern": "\\x40\\x25\\xff\\x01\\x00\\x00",
+      "mask": "xxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "chat_buffer_addr": {
+      "pattern": "\\x8B\\x45\\x08\\x83\\x7D\\x0C\\x07\\x74",
+      "mask": "xxxxxxxx",
+      "offset": "-0x4",
+      "section": "text"
+    },
+    "recv_whisper_func": {
+      "pattern": "\\x83\\xc4\\x04\\x8d\\x58\\x2e\\x8b\\xc3",
+      "mask": "xxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "print_chat_message_anchor": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmChatLog.cpp",
+      "assertion_message": "m_itemCount <= CHAT_LOG_SIZE",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "is_typing_assertion": {
+      "assertion_file": "\\Code\\Engine\\Controls\\CtlEdit.cpp",
+      "assertion_message": "charCount >= 1",
+      "line_number": "0",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "is_typing_frame_id_sub": {
+      "pattern": "\\x89\\x7e\\x50",
+      "mask": "xxx",
+      "offset": "0x5",
+      "section": "text"
+    },
+    "uicallback_assign_editable_text": {
+      "pattern": "readOnly",
+      "mask": "",
+      "offset": "0x0",
+      "section": "text"
+    },
+    "uicallback_chat_log_assertion": {
+      "assertion_file": "\\Code\\Gw\\Ui\\Game\\GmChatLog.cpp",
+      "assertion_message": "m_itemCount <= CHAT_LOG_SIZE",
+      "line_number": "0",
+      "offset": "0x38",
+      "section": "text"
+    },
+    "chat_timestamps_patch": {
+      "pattern": "\\x83\\xc4\\x0c\\x85\\xc0\\x75\\x0c\\x6a\\x01",
+      "mask": "xxxxxxxxx",
+      "offset": "0x5",
+      "section": "text"
+    }
+  }
+}

@@ -41,12 +41,6 @@ int wcsncasecmp(const wchar_t* s1, const wchar_t* s2, size_t n) {
 
 namespace GW::player {
 
-RemoveActiveTitleFn g_remove_active_title_func = nullptr;
-SetActiveTitleFn g_set_active_title_func = nullptr;
-DepositFactionFn g_deposit_faction_func = nullptr;
-Context::TitleClientData* g_title_data = nullptr;
-std::atomic<bool> g_initialized = false;
-
 bool SetActiveTitle(GW::Constants::TitleID title_id) {
     if (!g_set_active_title_func) {
         return false;
@@ -102,9 +96,9 @@ wchar_t* SetPlayerName(uint32_t player_id, const wchar_t* replace_name) {
     return player ? std::wcsncpy(player->name_enc + 2, replace_name, 20) : nullptr;
 }
 
-// bool ChangeSecondProfession(GW::Constants::Profession profession, uint32_t hero_index) {
-//     return skillbar::ChangeSecondProfession(profession, hero_index);
-// }
+bool ChangeSecondProfession(GW::Constants::Profession profession, uint32_t hero_index) {
+    return skillbar::ChangeSecondProfession(profession, hero_index);
+}
 
 Context::Player* GetPlayerByName(const wchar_t* name) {
     if (!name) {

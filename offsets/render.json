@@ -24,6 +24,12 @@
       "mask": "xxxxxxx",
       "offset": "0x0",
       "section": "text"
+    },
+    "screen_capture_target": {
+      "assertion_file": "Dx9Dev.cpp",
+      "assertion_message": "No valid case for switch variable 'mode.Format'",
+      "offset": "0x0",
+      "section": "text"
     }
   }
 }

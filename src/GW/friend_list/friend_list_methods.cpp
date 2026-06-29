@@ -8,15 +8,6 @@
 
 namespace GW::friend_list {
 
-FriendEventHandlerFn g_friend_event_handler_func = nullptr;
-FriendEventHandlerFn g_friend_event_handler_original = nullptr;
-SetOnlineStatusFn g_set_online_status_func = nullptr;
-AddFriendFn g_add_friend_func = nullptr;
-RemoveFriendFn g_remove_friend_func = nullptr;
-uintptr_t g_friend_list_addr = 0;
-std::unordered_map<PY4GW::HookEntry*, FriendStatusCallback> g_friend_status_callbacks;
-std::atomic<bool> g_initialized = false;
-
 Context::FriendList* GetFriendList() {
     return reinterpret_cast<Context::FriendList*>(g_friend_list_addr);
 }
@@ -128,31 +119,44 @@ Context::FriendStatus GetMyStatus() {
     return friend_list ? friend_list->player_status : Context::FriendStatus::Offline;
 }
 
-static bool InternalAddFriend(Context::FriendType type, const wchar_t* name, const wchar_t* alias) {
+bool AddFriend(const wchar_t* name, const wchar_t* alias) {
     if (!(g_add_friend_func && name && name[0])) {
         return false;
     }
 
     wchar_t* buffer = nullptr;
-    if (!alias) {
+    const wchar_t* use_alias = alias;
+    if (!use_alias) {
         const size_t length = std::wcslen(name);
         buffer = new wchar_t[length + 1];
         PY4GW_ASSERT(buffer);
         std::wcscpy(buffer, name);
-        alias = buffer;
+        use_alias = buffer;
     }
 
-    g_add_friend_func(name, alias, type);
+    g_add_friend_func(name, use_alias, Context::FriendType::Friend);
     delete[] buffer;
     return true;
 }
 
-bool AddFriend(const wchar_t* name, const wchar_t* alias) {
-    return InternalAddFriend(Context::FriendType::Friend, name, alias);
-}
-
 bool AddIgnore(const wchar_t* name, const wchar_t* alias) {
-    return InternalAddFriend(Context::FriendType::Ignore, name, alias);
+    if (!(g_add_friend_func && name && name[0])) {
+        return false;
+    }
+
+    wchar_t* buffer = nullptr;
+    const wchar_t* use_alias = alias;
+    if (!use_alias) {
+        const size_t length = std::wcslen(name);
+        buffer = new wchar_t[length + 1];
+        PY4GW_ASSERT(buffer);
+        std::wcscpy(buffer, name);
+        use_alias = buffer;
+    }
+
+    g_add_friend_func(name, use_alias, Context::FriendType::Ignore);
+    delete[] buffer;
+    return true;
 }
 
 bool RemoveFriend(Context::Friend* friend_entry) {

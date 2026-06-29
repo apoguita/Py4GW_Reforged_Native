@@ -13,6 +13,18 @@
       "mask": "x????xxx",
       "offset": "0",
       "section": "text"
+    },
+    "abandon_quest_ref": {
+      "pattern": "\\xC7\\x45\\xF8\\x02\\x00\\x00\\x00\\x50\\xC7",
+      "mask": "xxxxxxxxx",
+      "offset": "0x55",
+      "section": "text"
+    },
+    "set_active_quest_sig": {
+      "pattern": "\\x55\\x8B\\xEC",
+      "mask": "xxx",
+      "offset": "0",
+      "section": "text"
     }
   }
 }
