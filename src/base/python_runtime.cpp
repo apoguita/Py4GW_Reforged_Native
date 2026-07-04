@@ -259,9 +259,10 @@ public:
             return;
         }
         py::gil_scoped_acquire gil;
-        if (CallSafe(draw_fn_, "draw()")) {
-            return;
-        }
+        // draw() and main() both run every draw frame, ungated from each other
+        // (equal priority - NOT a draw()-first fallback). update() runs only in
+        // ExecuteUpdate on the update loop. CallSafe no-ops on an absent function.
+        CallSafe(draw_fn_, "draw()");
         CallSafe(main_fn_, "main()");
     }
 
@@ -448,27 +449,7 @@ bool Initialize() {
 
     // Pre-init environment report: which python DLL is actually mapped into
     // the game process, and what the interpreter will see for path config.
-    HMODULE python_dll = ::GetModuleHandleA("python313.dll");
-    char python_dll_path[MAX_PATH] = {};
-    if (python_dll != nullptr && ::GetModuleFileNameA(python_dll, python_dll_path, MAX_PATH) > 0) {
-        logger.LogInfo(std::string("[python] python313.dll mapped from: ") + python_dll_path);
-        const std::string mapped_path(python_dll_path);
-        if (mapped_path.find("_MEI") != std::string::npos ||
-            mapped_path.find("\\Temp\\") != std::string::npos) {
-            logger.LogError(
-                "[python] WRONG PYTHON RUNTIME: python313.dll came from a temporary "
-                "launcher extraction directory, not the default Windows 32-bit Python "
-                "install. Keep python313.dll/python3.dll beside Py4GW.dll (the build "
-                "copies them there) or inject with a tool that loads the DLL by full path.");
-        }
-    } else {
-        logger.LogWarning("[python] python313.dll module handle NOT found in process.");
-    }
-    logger.LogInfo(std::string("[python] Py_GetVersion: ") + Py_GetVersion());
-    const char* env_home = std::getenv("PYTHONHOME");
-    const char* env_pypath = std::getenv("PYTHONPATH");
-    logger.LogInfo(std::string("[python] PYTHONHOME=") + (env_home ? env_home : "<unset>"));
-    logger.LogInfo(std::string("[python] PYTHONPATH=") + (env_pypath ? env_pypath : "<unset>"));
+    
     logger.LogInfo(std::string("[python] Py_IsInitialized (pre): ") + std::to_string(Py_IsInitialized()));
 
     try {
@@ -529,6 +510,7 @@ bool Initialize() {
             "PyPlayer",
             "PyQuest",
             "PyRender",
+            "PySkill",
             "PySkillbar",
             "PyUIManager",
             "PyTexture",

@@ -12,6 +12,19 @@
 #include <cstdio>
 #include <cstring>
 
+// CPython C API for capturing the Python-level traceback at crash time. The
+// _DEBUG guard mirrors pybind11: Python.h auto-links pythonXX_d.lib under
+// _DEBUG, which we do not ship, so temporarily undefine it for the include.
+#if defined(_DEBUG)
+#  define PY4GW_CRASH_RESTORE_DEBUG
+#  undef _DEBUG
+#endif
+#include <Python.h>
+#if defined(PY4GW_CRASH_RESTORE_DEBUG)
+#  define _DEBUG
+#  undef PY4GW_CRASH_RESTORE_DEBUG
+#endif
+
 namespace {
 
 volatile LONG s_handling = 0;
@@ -252,14 +265,24 @@ bool CrashHandler::EnsureCrashDir() {
         return true;
     }
 
+    // Crash reports must land in the injection folder (where Gw.exe lives),
+    // NOT beside the DLL. The working directory is set to the module dir for
+    // script loading, so GetCurrentDirectory() would put reports next to the
+    // DLL - use the process (exe) directory explicitly, matching where the
+    // injection log is written.
     wchar_t base[MAX_PATH] = {};
-    const DWORD length = ::GetCurrentDirectoryW(MAX_PATH, base);
-    if (length == 0 || length >= MAX_PATH) {
-        const std::filesystem::path module_dir = PY4GW::process_manager::GetModuleDirectory();
-        if (module_dir.empty()) {
-            return false;
+    const std::filesystem::path process_dir = PY4GW::process_manager::GetProcessDirectory();
+    if (!process_dir.empty()) {
+        wcsncpy_s(base, process_dir.c_str(), _TRUNCATE);
+    } else {
+        const DWORD length = ::GetCurrentDirectoryW(MAX_PATH, base);
+        if (length == 0 || length >= MAX_PATH) {
+            const std::filesystem::path module_dir = PY4GW::process_manager::GetModuleDirectory();
+            if (module_dir.empty()) {
+                return false;
+            }
+            wcsncpy_s(base, module_dir.c_str(), _TRUNCATE);
         }
-        wcsncpy_s(base, module_dir.c_str(), _TRUNCATE);
     }
 
     _snwprintf_s(s_crash_dir, MAX_PATH, _TRUNCATE, L"%s\\crashes", base);
@@ -480,9 +503,11 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
         folder_name = folder_name ? folder_name + 1 : report_dir;
         wcsncpy_s(report_name, folder_name, _TRUNCATE);
 
+        wchar_t pytrace_path[MAX_PATH] = {};
         _snwprintf_s(dump_path, MAX_PATH, _TRUNCATE, L"%s\\%s.dmp", report_dir, report_name);
         _snwprintf_s(json_path, MAX_PATH, _TRUNCATE, L"%s\\%s.json", report_dir, report_name);
         _snwprintf_s(stack_path, MAX_PATH, _TRUNCATE, L"%s\\%s-stack.txt", report_dir, report_name);
+        _snwprintf_s(pytrace_path, MAX_PATH, _TRUNCATE, L"%s\\%s-pytrace.txt", report_dir, report_name);
 
         const wchar_t* dump_name = wcsrchr(dump_path, L'\\');
         dump_name = dump_name ? dump_name + 1 : dump_path;
@@ -510,6 +535,7 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
             s_panic_message[0] ? s_panic_message : "");
 
         WriteStackTrace(info, stack_path);
+        WritePythonStackTrace(pytrace_path);
         WriteSidecar(info, json_path, dump_name, gw_text_name, stack_name, source_label, write_dump);
         if (write_dump) {
             WriteDump(info, dump_path, comment);
@@ -738,6 +764,67 @@ void CrashHandler::WriteStackTrace(EXCEPTION_POINTERS* info, const wchar_t* stac
         ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
     }
 
+    ::CloseHandle(file);
+}
+
+// Walks the CPython frame stack of the crashing thread and writes a Python
+// traceback (file:line in function, innermost first). Read-only and
+// SEH-guarded; refs are intentionally leaked (never dealloc during a crash),
+// and the whole walk no-ops safely if there is no interpreter/thread state
+// (e.g. a crash that did not originate from a Python call).
+void CrashHandler::WritePythonStackTrace(const wchar_t* pytrace_path) {
+    if (::Py_IsInitialized() == 0) {
+        return;
+    }
+    HANDLE file = ::CreateFileW(pytrace_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    __try {
+        PyThreadState* tstate = ::PyGILState_GetThisThreadState();
+        if (tstate == nullptr) {
+            const char* msg = "No active Python thread state on the crashing thread\r\n"
+                              "(the crash did not originate from a Python call).\r\n";
+            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
+            ::CloseHandle(file);
+            return;
+        }
+        PyFrameObject* frame = ::PyThreadState_GetFrame(tstate);
+        if (frame == nullptr) {
+            const char* msg = "No Python frame on the crashing thread.\r\n";
+            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
+            ::CloseHandle(file);
+            return;
+        }
+        const char* header = "Python stack (most recent call first):\r\n";
+        ::WriteFile(file, header, static_cast<DWORD>(strlen(header)), &written, nullptr);
+
+        char line[1400] = {};
+        int depth = 0;
+        while (frame != nullptr && depth < 96) {
+            PyCodeObject* code = ::PyFrame_GetCode(frame);
+            const int lineno = ::PyFrame_GetLineNumber(frame);
+            const char* fname = "<unknown>";
+            const char* qual = "<unknown>";
+            if (code != nullptr) {
+                const char* f = ::PyUnicode_AsUTF8(code->co_filename);
+                const char* q = ::PyUnicode_AsUTF8(code->co_qualname);
+                if (f != nullptr) fname = f;
+                if (q != nullptr) qual = q;
+            }
+            _snprintf_s(line, sizeof(line), _TRUNCATE, "#%02d %s:%d in %s\r\n", depth, fname, lineno, qual);
+            ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+
+            // Move to caller. Strong refs from GetFrame/GetCode/GetBack are
+            // intentionally leaked - never dealloc a Python object mid-crash.
+            frame = ::PyFrame_GetBack(frame);
+            ++depth;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        const char* msg = "\r\n[python trace capture faulted - interpreter state was unreadable]\r\n";
+        ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
+    }
     ::CloseHandle(file);
 }
 

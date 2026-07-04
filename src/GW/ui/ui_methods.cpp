@@ -394,6 +394,14 @@ uint32_t ClampPreference(Constants::NumberPreference pref, uint32_t value) {
 
 namespace GW::ui {
 
+// Frame-array slots may hold null OR a 0xFFFFFFFF (-1) sentinel for
+// empty/deleted entries. A bare `frame != nullptr` check lets the sentinel
+// through and dereferencing it faults (near-0x134). Mirrors legacy
+// GWCA IsFrameValid: valid = non-null AND not the -1 sentinel.
+static bool IsFrameValid(const Frame* frame) {
+    return frame != nullptr && frame != reinterpret_cast<const Frame*>(static_cast<uintptr_t>(-1));
+}
+
 Frame* FrameRelation::GetFrame() {
     return reinterpret_cast<Frame*>(reinterpret_cast<uintptr_t>(this) - offsetof(Frame, relation));
 }
@@ -411,7 +419,8 @@ Frame* GetFrameById(uint32_t frame_id) {
     if (!(frame_array && frame_id < frame_array->size())) {
         return nullptr;
     }
-    return (*frame_array)[frame_id];
+    Frame* frame = (*frame_array)[frame_id];
+    return IsFrameValid(frame) ? frame : nullptr;
 }
 
 Frame* GetParentFrame(Frame* frame) {
@@ -537,7 +546,7 @@ Frame* GetFrameByLabel(const wchar_t* frame_label) {
         return nullptr;
     }
     for (auto* frame : *frame_array) {
-        if (frame && frame->relation.frame_hash_id == hash) {
+        if (IsFrameValid(frame) && frame->relation.frame_hash_id == hash) {
             return frame;
         }
     }
@@ -556,7 +565,7 @@ uint32_t GetFrameIDByHash(uint32_t hash) {
     }
     for (uint32_t frame_id = 0; frame_id < frame_array->size(); ++frame_id) {
         auto* frame = (*frame_array)[frame_id];
-        if (frame && frame->relation.frame_hash_id == hash) {
+        if (IsFrameValid(frame) && frame->relation.frame_hash_id == hash) {
             return frame_id;
         }
     }
@@ -589,7 +598,7 @@ Frame* GetChildFromNameHash(Frame* parent, uint32_t name_hash) {
         return nullptr;
     }
     for (auto* frame : *frame_array) {
-        if (frame && frame->relation.GetParent() == parent && frame->relation.frame_hash_id == name_hash) {
+        if (IsFrameValid(frame) && frame->relation.GetParent() == parent && frame->relation.frame_hash_id == name_hash) {
             return frame;
         }
     }
@@ -603,7 +612,7 @@ std::vector<uint32_t> GetOverlayFrames() {
         return result;
     }
     for (auto* frame : *frame_array) {
-        if (frame && frame->IsCreated()) {
+        if (IsFrameValid(frame) && frame->IsCreated()) {
             result.push_back(frame->frame_id);
         }
     }
@@ -617,7 +626,7 @@ std::vector<uint32_t> GetPopupFrames() {
         return result;
     }
     for (auto* frame : *frame_array) {
-        if (frame && frame->IsCreated()) {
+        if (IsFrameValid(frame) && frame->IsCreated()) {
             result.push_back(frame->frame_id);
         }
     }
@@ -1733,7 +1742,7 @@ std::vector<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> GetFrameHierarch
         return hierarchy;
     }
     for (auto* frame : *frame_array) {
-        if (!(frame && frame->IsCreated() && frame->IsVisible())) {
+        if (!(IsFrameValid(frame) && frame->IsCreated() && frame->IsVisible())) {
             continue;
         }
         Frame* parent = frame->relation.GetParent();
@@ -1769,7 +1778,7 @@ std::vector<uint32_t> GetFrameArray() {
     }
     frame_ids.reserve(frame_array->size());
     for (uint32_t frame_id = 0; frame_id < frame_array->size(); ++frame_id) {
-        if ((*frame_array)[frame_id]) {
+        if (IsFrameValid((*frame_array)[frame_id])) {
             frame_ids.push_back(frame_id);
         }
     }

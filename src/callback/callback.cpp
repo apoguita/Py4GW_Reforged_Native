@@ -2,6 +2,7 @@
 
 #include "callback/callback.h"
 
+#include "base/CrashHandler.h"
 #include "profiler/profiler.h"
 #include "system/system.h"
 
@@ -160,10 +161,25 @@ void PyCallback::ExecutePhase(Phase phase, Context context) {
         const std::string full_prof_name = std::string(ctx_name) + ".Callback." + phase_suffix + "." + t->name;
 
         Profiler::Start(full_prof_name);
+        // Stamp the crash context so an UNCATCHABLE fault (access violation)
+        // inside a callback names the culprit in the crash sidecar.
+        CrashHandler::SetContext("runtime", "callback", t->name.c_str());
+        // Per-callback isolation (parity with legacy's per-widget `except
+        // Exception`): a single callback failing must NOT stop the others in
+        // this phase. Catch EVERYTHING. For Python errors use
+        // discard_as_unraisable (reports via sys.unraisablehook and cleans up
+        // safely) rather than error_already_set::what(), which re-enters Python
+        // to format a traceback and is fragile inside this tight loop.
         try {
             t->fn();
-        } catch (const py::error_already_set&) {
-            PyErr_Print();
+        } catch (py::error_already_set& e) {
+            e.discard_as_unraisable(t->name.c_str());
+        } catch (const std::exception& e) {
+            System::Instance().WriteConsoleMessage("PyCallback", MessageType::Error,
+                std::string("Callback '") + t->name + "' error: " + e.what());
+        } catch (...) {
+            System::Instance().WriteConsoleMessage("PyCallback", MessageType::Error,
+                std::string("Callback '") + t->name + "' unknown error.");
         }
         Profiler::End(frame_id, full_prof_name);
     }

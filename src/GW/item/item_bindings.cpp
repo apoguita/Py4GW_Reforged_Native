@@ -3,12 +3,75 @@
 
 #include "GW/item/item.h"
 
+#include <cstdint>
 #include <string>
 
 namespace py = pybind11;
 
+namespace {
+
+// Legacy SafeItemModifier (py_items.h/.cpp), exposed to Python as
+// PyItem.ItemModifier. Self-contained value type over a raw 32-bit mod word;
+// pure bit math, no GW backend dependency. Used by
+// Py4GWCoreLib.item_mods_src.decoded_modifier.
+std::string IntToBinaryString(uint32_t value, size_t bit_count) {
+    std::string binary_str;
+    binary_str.reserve(bit_count);
+    for (int i = static_cast<int>(bit_count) - 1; i >= 0; --i) {
+        binary_str += (value & (1u << i)) ? '1' : '0';
+    }
+    return binary_str;
+}
+
+class ItemModifier {
+public:
+    explicit ItemModifier(uint32_t mod_value) : mod_(mod_value) {}
+
+    uint32_t GetIdentifier() const { return mod_ >> 16; }
+    uint32_t GetArg1() const { return (mod_ & 0x0000FF00u) >> 8; }
+    uint32_t GetArg2() const { return (mod_ & 0x000000FFu); }
+    uint32_t GetArg() const { return (mod_ & 0x0000FFFFu); }
+
+    bool IsValid() const { return mod_ != 0; }
+
+    std::string GetModBits() const { return IntToBinaryString(mod_, 32); }
+    std::string GetIdentifierBits() const { return IntToBinaryString(GetIdentifier(), 16); }
+    std::string GetArg1Bits() const { return IntToBinaryString(GetArg1(), 8); }
+    std::string GetArg2Bits() const { return IntToBinaryString(GetArg2(), 8); }
+    std::string GetArgBits() const { return IntToBinaryString(GetArg(), 16); }
+
+    std::string ToString() const {
+        if (!IsValid()) {
+            return "No Modifier";
+        }
+        return "Modifier ID: " + std::to_string(GetIdentifier()) +
+            " (" + GetIdentifierBits() + ")" +
+            ", Arg1: " + std::to_string(GetArg1()) +
+            " (" + GetArg1Bits() + ")" +
+            ", Arg2: " + std::to_string(GetArg2()) +
+            " (" + GetArg2Bits() + ")" +
+            ", Arg: " + std::to_string(GetArg()) +
+            " (" + GetArgBits() + ")";
+    }
+
+private:
+    uint32_t mod_;
+};
+
+}  // namespace
+
 PYBIND11_EMBEDDED_MODULE(PyItem, m) {
     m.doc() = "Py4GW Item bindings";
+
+    py::class_<ItemModifier>(m, "ItemModifier")
+        .def(py::init<uint32_t>())
+        .def("GetIdentifier", &ItemModifier::GetIdentifier)
+        .def("GetArg1", &ItemModifier::GetArg1)
+        .def("GetArg2", &ItemModifier::GetArg2)
+        .def("GetArg", &ItemModifier::GetArg)
+        .def("IsValid", &ItemModifier::IsValid)
+        .def("GetModBits", &ItemModifier::GetModBits)
+        .def("ToString", &ItemModifier::ToString);
 
     m.def("use_item_by_id", [](uint32_t item_id) -> bool {
         auto* item = GW::item::GetItemById(item_id);

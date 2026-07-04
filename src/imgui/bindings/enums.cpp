@@ -276,6 +276,11 @@ void register_enums(py::module_& m) {
         .value("ButtonTextAlign", ImGuiStyleVar_ButtonTextAlign).value("SelectableTextAlign", ImGuiStyleVar_SelectableTextAlign)
         .value("SeparatorTextBorderSize", ImGuiStyleVar_SeparatorTextBorderSize).value("SeparatorTextAlign", ImGuiStyleVar_SeparatorTextAlign)
         .value("SeparatorTextPadding", ImGuiStyleVar_SeparatorTextPadding).export_values();
+
+    // Legacy-name aliases: the migrated Py4GWCoreLib references the legacy
+    // PyImGui spellings for these; keep both names pointing at the same types.
+    m.attr("ImGuiComboFlags") = m.attr("ComboFlags");
+    m.attr("ImGuiWindowFlags_AlwaysAutoResize") = m.attr("WindowFlags").attr("AlwaysAutoResize");
 }
 
 }  // namespace PY4GW::imgui_bindings

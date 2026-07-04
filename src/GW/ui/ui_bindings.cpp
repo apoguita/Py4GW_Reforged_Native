@@ -149,6 +149,366 @@ py::dict FrameSnapshot(uint32_t frame_id) {
     return out;
 }
 
+// ============================================================================
+// Legacy PyUIManager snapshot classes (UIFrame + wrappers), ported 1:1 from
+// legacy py_ui.h / py_ui.cpp. Py4GWCoreLib.UIManager constructs
+// PyUIManager.UIFrame(frame_id) and reads the cached field snapshot.
+// Deviation from legacy: the UIInteractionCallback py::init taking a raw
+// native function pointer is not bound (never constructible from Python).
+// ============================================================================
+
+struct UIInteractionCallbackWrapper {
+    uintptr_t callback_address = 0;  // Store function pointer as an integer
+    uintptr_t uictl_context = 0;
+    uint32_t h0008 = 0;
+
+    UIInteractionCallbackWrapper() = default;
+
+    explicit UIInteractionCallbackWrapper(GW::ui::UIInteractionCallback callback)
+        : callback_address(reinterpret_cast<uintptr_t>(callback)) {}
+
+    explicit UIInteractionCallbackWrapper(const GW::ui::FrameInteractionCallback& callback)
+        : callback_address(reinterpret_cast<uintptr_t>(callback.callback)),
+          uictl_context(reinterpret_cast<uintptr_t>(callback.uictl_context)),
+          h0008(callback.h0008) {}
+
+    uintptr_t get_address() const { return callback_address; }
+};
+
+struct FramePositionWrapper {
+    uint32_t top = 0;
+    uint32_t left = 0;
+    uint32_t bottom = 0;
+    uint32_t right = 0;
+
+    uint32_t content_top = 0;
+    uint32_t content_left = 0;
+    uint32_t content_bottom = 0;
+    uint32_t content_right = 0;
+
+    float unknown = 0.0f;
+    float scale_factor = 0.0f;
+    float viewport_width = 0.0f;
+    float viewport_height = 0.0f;
+
+    float screen_top = 0.0f;
+    float screen_left = 0.0f;
+    float screen_bottom = 0.0f;
+    float screen_right = 0.0f;
+
+    uint32_t top_on_screen = 0;
+    uint32_t left_on_screen = 0;
+    uint32_t bottom_on_screen = 0;
+    uint32_t right_on_screen = 0;
+
+    uint32_t width_on_screen = 0;
+    uint32_t height_on_screen = 0;
+
+    float viewport_scale_x = 0.0f;
+    float viewport_scale_y = 0.0f;
+};
+
+struct FrameRelationWrapper {
+    uint32_t parent_id = 0;
+    uint32_t field67_0x124 = 0;
+    uint32_t field68_0x128 = 0;
+    uint32_t frame_hash_id = 0;
+    std::vector<uint32_t> siblings;
+};
+
+// Reinterprets the callback array as frame callbacks so Python can inspect
+// the extra metadata (legacy ConvertFrameInteractionCallbacks).
+std::vector<UIInteractionCallbackWrapper> ConvertFrameInteractionCallbacks(
+    const GW::GWArray<GW::ui::UIInteractionCallback>& arr) {
+    std::vector<UIInteractionCallbackWrapper> result;
+    auto* callbacks = reinterpret_cast<const GW::GWArray<GW::ui::FrameInteractionCallback>*>(&arr);
+    if (!(callbacks && callbacks->valid())) {
+        return result;
+    }
+    result.reserve(callbacks->size());
+    for (const auto& callback : *callbacks) {
+        result.emplace_back(callback);
+    }
+    return result;
+}
+
+// Converts an opaque pointer array into integer addresses for Python-side inspection.
+std::vector<uintptr_t> FillVectorFromPointerArray(const GW::GWArray<void*>& arr) {
+    std::vector<uintptr_t> vec;
+    if (!arr.valid()) {
+        return vec;
+    }
+    vec.reserve(arr.size());
+    for (void* ptr : arr) {
+        vec.push_back(reinterpret_cast<uintptr_t>(ptr));
+    }
+    return vec;
+}
+
+// Collects sibling frame ids from the relation list attached to a frame.
+std::vector<uint32_t> GetSiblingFrameIDs(uint32_t frame_id) {
+    std::vector<uint32_t> sibling_ids;
+    Frame* frame = GW::ui::GetFrameById(frame_id);
+    if (!frame) {
+        return sibling_ids;
+    }
+    for (auto it = frame->relation.siblings.begin(); it != frame->relation.siblings.end(); ++it) {
+        GW::ui::FrameRelation& sibling = *it;
+        Frame* sibling_frame = sibling.GetFrame();
+        if (sibling_frame) {
+            sibling_ids.push_back(sibling_frame->frame_id);
+        }
+    }
+    return sibling_ids;
+}
+
+class UIFrame {
+public:
+    bool is_created = false;
+    bool is_visible = false;
+
+    uint32_t frame_id = 0;
+    uint32_t parent_id = 0;
+    uint32_t frame_hash = 0;
+    uint32_t field1_0x0 = 0;
+    uint32_t field2_0x4 = 0;
+    uint32_t frame_layout = 0;
+    uint32_t field3_0xc = 0;
+    uint32_t field4_0x10 = 0;
+    uint32_t field5_0x14 = 0;
+    uint32_t visibility_flags = 0;
+    uint32_t field7_0x1c = 0;
+    uint32_t type = 0;
+    uint32_t template_type = 0;
+    uint32_t field10_0x28 = 0;
+    uint32_t field11_0x2c = 0;
+    uint32_t field12_0x30 = 0;
+    uint32_t field13_0x34 = 0;
+    uint32_t field14_0x38 = 0;
+    uint32_t field15_0x3c = 0;
+    uint32_t field16_0x40 = 0;
+    uint32_t field17_0x44 = 0;
+    uint32_t field18_0x48 = 0;
+    uint32_t field19_0x4c = 0;
+    uint32_t field20_0x50 = 0;
+    uint32_t field21_0x54 = 0;
+    uint32_t field22_0x58 = 0;
+    uint32_t field23_0x5c = 0;
+    uint32_t field24_0x60 = 0;
+    uint32_t field24a_0x64 = 0;
+    uint32_t field24b_0x68 = 0;
+    uint32_t field25_0x6c = 0;
+    uint32_t field26_0x70 = 0;
+    uint32_t field27_0x74 = 0;
+    uint32_t field28_0x78 = 0;
+    uint32_t field29_0x7c = 0;
+    uint32_t field30_0x80 = 0;
+    std::vector<uintptr_t> field31_0x84;
+    uint32_t field32_0x94 = 0;
+    uint32_t field33_0x98 = 0;
+    uint32_t field34_0x9c = 0;
+    uint32_t field35_0xa0 = 0;
+    uint32_t field36_0xa4 = 0;
+    std::vector<UIInteractionCallbackWrapper> frame_callbacks;
+    uint32_t child_offset_id = 0;
+    uint32_t field40_0xc0 = 0;
+    uint32_t field41_0xc4 = 0;
+    uint32_t field42_0xc8 = 0;
+    uint32_t field43_0xcc = 0;
+    uint32_t field44_0xd0 = 0;
+    uint32_t field45_0xd4 = 0;
+    FramePositionWrapper position;
+    uint32_t field63_0x11c = 0;
+    uint32_t field64_0x120 = 0;
+    uint32_t field65_0x124 = 0;
+    FrameRelationWrapper relation;
+    uint32_t field73_0x144 = 0;
+    uint32_t field74_0x148 = 0;
+    uint32_t field75_0x14c = 0;
+    uint32_t field76_0x150 = 0;
+    uint32_t field77_0x154 = 0;
+    uint32_t field78_0x158 = 0;
+    uint32_t field79_0x15c = 0;
+    uint32_t field80_0x160 = 0;
+    uint32_t field81_0x164 = 0;
+    uint32_t field82_0x168 = 0;
+    uint32_t field83_0x16c = 0;
+    uint32_t field84_0x170 = 0;
+    uint32_t field85_0x174 = 0;
+    uint32_t field86_0x178 = 0;
+    uint32_t field87_0x17c = 0;
+    uint32_t field88_0x180 = 0;
+    uint32_t field89_0x184 = 0;
+    uint32_t field90_0x188 = 0;
+    uint32_t frame_state = 0;
+    uint32_t field92_0x190 = 0;
+    uint32_t field93_0x194 = 0;
+    uint32_t field94_0x198 = 0;
+    uint32_t field95_0x19c = 0;
+    uint32_t field96_0x1a0 = 0;
+    uint32_t field97_0x1a4 = 0;
+    uint32_t field98_0x1a8 = 0;
+    // TooltipInfo* tooltip_info; (not exposed, matching legacy)
+    uint32_t field100_0x1b0 = 0;
+    uint32_t field101_0x1b4 = 0;
+    uint32_t field102_0x1b8 = 0;
+    uint32_t field103_0x1bc = 0;
+    uint32_t field104_0x1c0 = 0;
+    uint32_t field105_0x1c4 = 0;
+
+    explicit UIFrame(int pframe_id) {
+        frame_id = static_cast<uint32_t>(pframe_id);
+        GetContext();
+    }
+
+    // Refreshes the cached field snapshot from the live native frame.
+    void GetContext() {
+        Frame* frame = GW::ui::GetFrameById(frame_id);
+        if (!frame) {
+            return;
+        }
+
+        Frame* parent = frame->relation.GetParent();
+        parent_id = parent ? parent->frame_id : 0;
+        frame_hash = frame->relation.frame_hash_id;
+
+        frame_layout = frame->frame_layout;
+        visibility_flags = frame->visibility_flags;
+        type = frame->type;
+        template_type = frame->template_type;
+        frame_callbacks = ConvertFrameInteractionCallbacks(frame->frame_callbacks);
+        child_offset_id = frame->child_offset_id;
+
+        field1_0x0 = frame->field1_0x0;
+        field2_0x4 = frame->field2_0x4;
+        field3_0xc = frame->field3_0xc;
+        field4_0x10 = frame->field4_0x10;
+        field5_0x14 = frame->field5_0x14;
+        field7_0x1c = frame->field7_0x1c;
+        field10_0x28 = frame->field10_0x28;
+        field11_0x2c = frame->field11_0x2c;
+        field12_0x30 = frame->field12_0x30;
+        field13_0x34 = frame->field13_0x34;
+        field14_0x38 = frame->field14_0x38;
+        field15_0x3c = frame->field15_0x3c;
+        field16_0x40 = frame->field16_0x40;
+        field17_0x44 = frame->field17_0x44;
+        field18_0x48 = frame->field18_0x48;
+        field19_0x4c = frame->field19_0x4c;
+        field20_0x50 = frame->field20_0x50;
+        field21_0x54 = frame->field21_0x54;
+        field22_0x58 = frame->field22_0x58;
+        field23_0x5c = frame->field23_0x5c;
+        field24_0x60 = frame->field24_0x60;
+        field24a_0x64 = frame->field24a_0x64;
+        field24b_0x68 = frame->field24b_0x68;
+        field25_0x6c = frame->field25_0x6c;
+        field26_0x70 = frame->field26_0x70;
+        field27_0x74 = frame->field27_0x74;
+        field28_0x78 = frame->field28_0x78;
+        field29_0x7c = frame->field29_0x7c;
+        field30_0x80 = frame->field30_0x80;
+        field31_0x84 = FillVectorFromPointerArray(frame->field31_0x84);
+        field32_0x94 = frame->field32_0x94;
+        field33_0x98 = frame->field33_0x98;
+        field34_0x9c = frame->field34_0x9c;
+        field35_0xa0 = frame->field35_0xa0;
+        field36_0xa4 = frame->field36_0xa4;
+
+        field40_0xc0 = frame->field40_0xc0;
+        field41_0xc4 = frame->field41_0xc4;
+        field42_0xc8 = frame->field42_0xc8;
+        field43_0xcc = frame->field43_0xcc;
+        field44_0xd0 = frame->field44_0xd0;
+        field45_0xd4 = frame->field45_0xd4;
+
+        position.top = static_cast<uint32_t>(frame->position.top);
+        position.bottom = static_cast<uint32_t>(frame->position.bottom);
+        position.left = static_cast<uint32_t>(frame->position.left);
+        position.right = static_cast<uint32_t>(frame->position.right);
+
+        position.content_top = static_cast<uint32_t>(frame->position.content_top);
+        position.content_bottom = static_cast<uint32_t>(frame->position.content_bottom);
+        position.content_left = static_cast<uint32_t>(frame->position.content_left);
+        position.content_right = static_cast<uint32_t>(frame->position.content_right);
+
+        position.unknown = frame->position.unk;
+        position.scale_factor = frame->position.scale_factor;
+        position.viewport_width = frame->position.viewport_width;
+        position.viewport_height = frame->position.viewport_height;
+
+        position.screen_top = frame->position.screen_top;
+        position.screen_bottom = frame->position.screen_bottom;
+        position.screen_left = frame->position.screen_left;
+        position.screen_right = frame->position.screen_right;
+
+        Frame* root = GW::ui::GetRootFrame();
+        if (root) {
+            const auto top_left = frame->position.GetTopLeftOnScreen(root);
+            const auto bottom_right = frame->position.GetBottomRightOnScreen(root);
+            const auto size = frame->position.GetSizeOnScreen(root);
+            const auto scale = frame->position.GetViewportScale(root);
+
+            position.top_on_screen = static_cast<uint32_t>(top_left.y);
+            position.left_on_screen = static_cast<uint32_t>(top_left.x);
+            position.bottom_on_screen = static_cast<uint32_t>(bottom_right.y);
+            position.right_on_screen = static_cast<uint32_t>(bottom_right.x);
+
+            position.width_on_screen = static_cast<uint32_t>(size.x);
+            position.height_on_screen = static_cast<uint32_t>(size.y);
+
+            position.viewport_scale_x = scale.x;
+            position.viewport_scale_y = scale.y;
+        }
+
+        field63_0x11c = frame->field63_0x11c;
+        field64_0x120 = frame->field64_0x120;
+        field65_0x124 = frame->field65_0x124;
+
+        relation.parent_id = parent ? parent->frame_id : 0;
+        relation.field67_0x124 = frame->relation.field67_0x124;
+        relation.field68_0x128 = frame->relation.field68_0x128;
+        relation.frame_hash_id = frame->relation.frame_hash_id;
+        relation.siblings = GetSiblingFrameIDs(frame->frame_id);
+
+        field73_0x144 = frame->field73_0x144;
+        field74_0x148 = frame->field74_0x148;
+        field75_0x14c = frame->field75_0x14c;
+        field76_0x150 = frame->field76_0x150;
+        field77_0x154 = frame->field77_0x154;
+        field78_0x158 = frame->field78_0x158;
+        field79_0x15c = frame->field79_0x15c;
+        field80_0x160 = frame->field80_0x160;
+        field81_0x164 = frame->field81_0x164;
+        field82_0x168 = frame->field82_0x168;
+        field83_0x16c = frame->field83_0x16c;
+        field84_0x170 = frame->field84_0x170;
+        field85_0x174 = frame->field85_0x174;
+        field86_0x178 = frame->field86_0x178;
+        field87_0x17c = frame->field87_0x17c;
+        field88_0x180 = frame->field88_0x180;
+        field89_0x184 = frame->field89_0x184;
+        field90_0x188 = frame->field90_0x188;
+        frame_state = frame->frame_state;
+        field92_0x190 = frame->field92_0x190;
+        field93_0x194 = frame->field93_0x194;
+        field94_0x198 = frame->field94_0x198;
+        field95_0x19c = frame->field95_0x19c;
+        field96_0x1a0 = frame->field96_0x1a0;
+        field97_0x1a4 = frame->field97_0x1a4;
+        field98_0x1a8 = frame->field98_0x1a8;
+        field100_0x1b0 = frame->field100_0x1b0;
+        field101_0x1b4 = frame->field101_0x1b4;
+        field102_0x1b8 = frame->field102_0x1b8;
+        field103_0x1bc = frame->field103_0x1bc;
+        field104_0x1c0 = frame->field104_0x1c0;
+        field105_0x1c4 = frame->field105_0x1c4;
+
+        is_visible = frame->IsVisible();
+        is_created = frame->IsCreated();
+    }
+};
+
 }  // namespace
 
 namespace {
@@ -160,12 +520,162 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
               "Legacy UIManager subsystems with custom hooks (window clones, "
               "devtext, title hooks, frame logs, control swarm) are not yet ported.";
 
+    // Low-level wrappers mirror native structs closely so Python-side
+    // investigation can inspect reconstructed frame state without additional
+    // marshaling layers (legacy py_ui.cpp parity).
+    py::class_<UIInteractionCallbackWrapper>(m, "UIInteractionCallback")
+        .def_readwrite("callback_address", &UIInteractionCallbackWrapper::callback_address)
+        .def_readwrite("uictl_context", &UIInteractionCallbackWrapper::uictl_context)
+        .def_readwrite("h0008", &UIInteractionCallbackWrapper::h0008)
+        .def("get_address", &UIInteractionCallbackWrapper::get_address);
+
+    py::class_<FramePositionWrapper>(m, "FramePosition")
+        .def(py::init<>())
+        .def_readwrite("top", &FramePositionWrapper::top)
+        .def_readwrite("left", &FramePositionWrapper::left)
+        .def_readwrite("bottom", &FramePositionWrapper::bottom)
+        .def_readwrite("right", &FramePositionWrapper::right)
+        .def_readwrite("content_top", &FramePositionWrapper::content_top)
+        .def_readwrite("content_left", &FramePositionWrapper::content_left)
+        .def_readwrite("content_bottom", &FramePositionWrapper::content_bottom)
+        .def_readwrite("content_right", &FramePositionWrapper::content_right)
+        .def_readwrite("unknown", &FramePositionWrapper::unknown)
+        .def_readwrite("scale_factor", &FramePositionWrapper::scale_factor)
+        .def_readwrite("viewport_width", &FramePositionWrapper::viewport_width)
+        .def_readwrite("viewport_height", &FramePositionWrapper::viewport_height)
+        .def_readwrite("screen_top", &FramePositionWrapper::screen_top)
+        .def_readwrite("screen_left", &FramePositionWrapper::screen_left)
+        .def_readwrite("screen_bottom", &FramePositionWrapper::screen_bottom)
+        .def_readwrite("screen_right", &FramePositionWrapper::screen_right)
+        .def_readwrite("top_on_screen", &FramePositionWrapper::top_on_screen)
+        .def_readwrite("left_on_screen", &FramePositionWrapper::left_on_screen)
+        .def_readwrite("bottom_on_screen", &FramePositionWrapper::bottom_on_screen)
+        .def_readwrite("right_on_screen", &FramePositionWrapper::right_on_screen)
+        .def_readwrite("width_on_screen", &FramePositionWrapper::width_on_screen)
+        .def_readwrite("height_on_screen", &FramePositionWrapper::height_on_screen)
+        .def_readwrite("viewport_scale_x", &FramePositionWrapper::viewport_scale_x)
+        .def_readwrite("viewport_scale_y", &FramePositionWrapper::viewport_scale_y);
+
+    py::class_<FrameRelationWrapper>(m, "FrameRelation")
+        .def(py::init<>())
+        .def_readwrite("parent_id", &FrameRelationWrapper::parent_id)
+        .def_readwrite("field67_0x124", &FrameRelationWrapper::field67_0x124)
+        .def_readwrite("field68_0x128", &FrameRelationWrapper::field68_0x128)
+        .def_readwrite("frame_hash_id", &FrameRelationWrapper::frame_hash_id)
+        .def_readwrite("siblings", &FrameRelationWrapper::siblings);
+
+    py::class_<UIFrame>(m, "UIFrame")
+        .def(py::init<int>())
+        .def_readwrite("frame_id", &UIFrame::frame_id)
+        .def_readwrite("parent_id", &UIFrame::parent_id)
+        .def_readwrite("frame_hash", &UIFrame::frame_hash)
+        .def_readwrite("visibility_flags", &UIFrame::visibility_flags)
+        .def_readwrite("type", &UIFrame::type)
+        .def_readwrite("template_type", &UIFrame::template_type)
+        .def_readwrite("position", &UIFrame::position)
+        .def_readwrite("relation", &UIFrame::relation)
+        .def_readwrite("is_created", &UIFrame::is_created)
+        .def_readwrite("is_visible", &UIFrame::is_visible)
+        .def_readwrite("field1_0x0", &UIFrame::field1_0x0)
+        .def_readwrite("field2_0x4", &UIFrame::field2_0x4)
+        .def_readwrite("frame_layout", &UIFrame::frame_layout)
+        .def_readwrite("field3_0xc", &UIFrame::field3_0xc)
+        .def_readwrite("field4_0x10", &UIFrame::field4_0x10)
+        .def_readwrite("field5_0x14", &UIFrame::field5_0x14)
+        .def_readwrite("field7_0x1c", &UIFrame::field7_0x1c)
+        .def_readwrite("field10_0x28", &UIFrame::field10_0x28)
+        .def_readwrite("field11_0x2c", &UIFrame::field11_0x2c)
+        .def_readwrite("field12_0x30", &UIFrame::field12_0x30)
+        .def_readwrite("field13_0x34", &UIFrame::field13_0x34)
+        .def_readwrite("field14_0x38", &UIFrame::field14_0x38)
+        .def_readwrite("field15_0x3c", &UIFrame::field15_0x3c)
+        .def_readwrite("field16_0x40", &UIFrame::field16_0x40)
+        .def_readwrite("field17_0x44", &UIFrame::field17_0x44)
+        .def_readwrite("field18_0x48", &UIFrame::field18_0x48)
+        .def_readwrite("field19_0x4c", &UIFrame::field19_0x4c)
+        .def_readwrite("field20_0x50", &UIFrame::field20_0x50)
+        .def_readwrite("field21_0x54", &UIFrame::field21_0x54)
+        .def_readwrite("field22_0x58", &UIFrame::field22_0x58)
+        .def_readwrite("field23_0x5c", &UIFrame::field23_0x5c)
+        .def_readwrite("field24_0x60", &UIFrame::field24_0x60)
+        .def_readwrite("field24a_0x64", &UIFrame::field24a_0x64)
+        .def_readwrite("field24b_0x68", &UIFrame::field24b_0x68)
+        .def_readwrite("field25_0x6c", &UIFrame::field25_0x6c)
+        .def_readwrite("field26_0x70", &UIFrame::field26_0x70)
+        .def_readwrite("field27_0x74", &UIFrame::field27_0x74)
+        .def_readwrite("field28_0x78", &UIFrame::field28_0x78)
+        .def_readwrite("field29_0x7c", &UIFrame::field29_0x7c)
+        .def_readwrite("field30_0x80", &UIFrame::field30_0x80)
+        .def_readwrite("field31_0x84", &UIFrame::field31_0x84)
+        .def_readwrite("field32_0x94", &UIFrame::field32_0x94)
+        .def_readwrite("field33_0x98", &UIFrame::field33_0x98)
+        .def_readwrite("field34_0x9c", &UIFrame::field34_0x9c)
+        .def_readwrite("field35_0xa0", &UIFrame::field35_0xa0)
+        .def_readwrite("field36_0xa4", &UIFrame::field36_0xa4)
+        .def_readwrite("frame_callbacks", &UIFrame::frame_callbacks)
+        .def_readwrite("child_offset_id", &UIFrame::child_offset_id)
+        .def_readwrite("field40_0xc0", &UIFrame::field40_0xc0)
+        .def_readwrite("field41_0xc4", &UIFrame::field41_0xc4)
+        .def_readwrite("field42_0xc8", &UIFrame::field42_0xc8)
+        .def_readwrite("field43_0xcc", &UIFrame::field43_0xcc)
+        .def_readwrite("field44_0xd0", &UIFrame::field44_0xd0)
+        .def_readwrite("field45_0xd4", &UIFrame::field45_0xd4)
+        .def_readwrite("field63_0x11c", &UIFrame::field63_0x11c)
+        .def_readwrite("field64_0x120", &UIFrame::field64_0x120)
+        .def_readwrite("field65_0x124", &UIFrame::field65_0x124)
+        .def_readwrite("field73_0x144", &UIFrame::field73_0x144)
+        .def_readwrite("field74_0x148", &UIFrame::field74_0x148)
+        .def_readwrite("field75_0x14c", &UIFrame::field75_0x14c)
+        .def_readwrite("field76_0x150", &UIFrame::field76_0x150)
+        .def_readwrite("field77_0x154", &UIFrame::field77_0x154)
+        .def_readwrite("field78_0x158", &UIFrame::field78_0x158)
+        .def_readwrite("field79_0x15c", &UIFrame::field79_0x15c)
+        .def_readwrite("field80_0x160", &UIFrame::field80_0x160)
+        .def_readwrite("field81_0x164", &UIFrame::field81_0x164)
+        .def_readwrite("field82_0x168", &UIFrame::field82_0x168)
+        .def_readwrite("field83_0x16c", &UIFrame::field83_0x16c)
+        .def_readwrite("field84_0x170", &UIFrame::field84_0x170)
+        .def_readwrite("field85_0x174", &UIFrame::field85_0x174)
+        .def_readwrite("field86_0x178", &UIFrame::field86_0x178)
+        .def_readwrite("field87_0x17c", &UIFrame::field87_0x17c)
+        .def_readwrite("field88_0x180", &UIFrame::field88_0x180)
+        .def_readwrite("field89_0x184", &UIFrame::field89_0x184)
+        .def_readwrite("field90_0x188", &UIFrame::field90_0x188)
+        .def_readwrite("frame_state", &UIFrame::frame_state)
+        .def_readwrite("field92_0x190", &UIFrame::field92_0x190)
+        .def_readwrite("field93_0x194", &UIFrame::field93_0x194)
+        .def_readwrite("field94_0x198", &UIFrame::field94_0x198)
+        .def_readwrite("field95_0x19c", &UIFrame::field95_0x19c)
+        .def_readwrite("field96_0x1a0", &UIFrame::field96_0x1a0)
+        .def_readwrite("field97_0x1a4", &UIFrame::field97_0x1a4)
+        .def_readwrite("field98_0x1a8", &UIFrame::field98_0x1a8)
+        .def_readwrite("field100_0x1b0", &UIFrame::field100_0x1b0)
+        .def_readwrite("field101_0x1b4", &UIFrame::field101_0x1b4)
+        .def_readwrite("field102_0x1b8", &UIFrame::field102_0x1b8)
+        .def_readwrite("field103_0x1bc", &UIFrame::field103_0x1bc)
+        .def_readwrite("field104_0x1c0", &UIFrame::field104_0x1c0)
+        .def_readwrite("field105_0x1c4", &UIFrame::field105_0x1c4)
+        .def("get_context", &UIFrame::GetContext);
+
     py::class_<UIManagerShim>(m, "UIManager")
         // ---- Global state / language ----
         .def_static("get_text_language", []() { return static_cast<uint32_t>(GW::ui::GetTextLanguage()); })
         .def_static("is_world_map_showing", []() { return GW::ui::GetIsWorldMapShowing(); })
         .def_static("is_ui_drawn", []() { return GW::ui::GetIsUIDrawn(); })
         .def_static("is_shift_screenshot", []() { return GW::ui::GetIsShiftScreenShot(); })
+        // ---- Built-in window (WindowID) position/visibility ----
+        .def_static("is_window_visible", [](uint32_t window_id) {
+            auto* pos = GW::ui::GetWindowPosition(static_cast<GW::ui::WindowID>(window_id));
+            return pos ? pos->visible() : false;
+        }, py::arg("window_id"))
+        .def_static("get_window_position", [](uint32_t window_id) -> py::object {
+            auto* pos = GW::ui::GetWindowPosition(static_cast<GW::ui::WindowID>(window_id));
+            if (!pos) return py::none();
+            return py::make_tuple(pos->p1.x, pos->p1.y, pos->p2.x, pos->p2.y);
+        }, py::arg("window_id"), "Get a built-in window rect as (left, top, right, bottom), or None.")
+        .def_static("set_window_visible", [](uint32_t window_id, bool is_visible) {
+            return GW::ui::SetWindowVisible(static_cast<GW::ui::WindowID>(window_id), is_visible);
+        }, py::arg("window_id"), py::arg("is_visible"))
         .def_static("set_open_links", [](bool toggle) { GW::ui::SetOpenLinks(toggle); }, py::arg("toggle"))
         .def_static("get_frame_limit", []() { return GW::ui::GetFrameLimit(); })
         .def_static("set_frame_limit", [](uint32_t value) { return GW::ui::SetFrameLimit(value); }, py::arg("value"))

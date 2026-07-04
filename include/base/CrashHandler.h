@@ -65,4 +65,8 @@ private:
                       const wchar_t* stack_name, const char* source, bool dump_generated);
     void WriteDump(EXCEPTION_POINTERS* info, const wchar_t* dmp_path, const char* comment);
     void WriteStackTrace(EXCEPTION_POINTERS* info, const wchar_t* stack_path);
+    // Captures the CPython-level traceback of the crashing thread (widget file/
+    // line/function) so crashes triggered from Python are attributable. Safe:
+    // read-only frame walk, SEH-guarded, no-op if no interpreter/thread state.
+    void WritePythonStackTrace(const wchar_t* pytrace_path);
 };

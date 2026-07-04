@@ -39,12 +39,12 @@ FontDefinition GetFontDefinition(FontId id) {
     case FontId::Italic46: return { "friz-quadrata-std-italic-587033b2c95df.otf", 46.0f };
     case FontId::Italic62: return { "friz-quadrata-std-italic-587033b2c95df.otf", 62.0f };
     case FontId::Italic124: return { "friz-quadrata-std-italic-587033b2c95df.otf", 124.0f };
-    case FontId::BoldItalic14: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 14.0f };
-    case FontId::BoldItalic22: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 22.0f };
-    case FontId::BoldItalic30: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 30.0f };
-    case FontId::BoldItalic46: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 46.0f };
-    case FontId::BoldItalic62: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 62.0f };
-    case FontId::BoldItalic124: return { "friz-quadrata-std-bold-italic-587033d6d4298.otf", 124.0f };
+    case FontId::BoldItalic14: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 14.0f };
+    case FontId::BoldItalic22: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 22.0f };
+    case FontId::BoldItalic30: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 30.0f };
+    case FontId::BoldItalic46: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 46.0f };
+    case FontId::BoldItalic62: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 62.0f };
+    case FontId::BoldItalic124: return { "friz-quadrata-std-bold_italic-587033d6d4298.otf", 124.0f };
     case FontId::Count: break;
     }
     PY4GW_UNREACHABLE("unknown FontId");
