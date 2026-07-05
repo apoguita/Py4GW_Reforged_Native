@@ -113,6 +113,64 @@ void register_drawlist(py::module_& m) {
           "Full-screen draw list rendered on top of every window. Use for overlays/ESP.");
     m.def("get_background_draw_list", &BackgroundDrawList, py::return_value_policy::reference,
           "Full-screen draw list rendered behind every window.");
+
+    // Legacy flat draw_list_* helpers (ported from py_imgui.cpp): each operates on the
+    // current window's draw list, taking loose x/y coordinates instead of a Vec2. The
+    // library (ImGui.py, dNodes, WindowModule) drives these directly. Same call surface
+    // as legacy; NB ImGui 1.92.8 swapped AddRect's trailing (thickness, flags) so we pass
+    // them in the new order here.
+    m.def("draw_list_add_line", [](float x1, float y1, float x2, float y2, ImU32 col, float thickness) {
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(x1, y1), ImVec2(x2, y2), col, thickness);
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("col"), py::arg("thickness") = 1.0f);
+
+    m.def("draw_list_add_rect", [](float x1, float y1, float x2, float y2, ImU32 col,
+                                   float rounding, int rounding_corners_flags, float thickness) {
+        ImGui::GetWindowDrawList()->AddRect(ImVec2(x1, y1), ImVec2(x2, y2), col, rounding,
+                                            thickness, static_cast<ImDrawFlags>(rounding_corners_flags));
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("col"),
+       py::arg("rounding") = 0.0f, py::arg("rounding_corners_flags") = 0, py::arg("thickness") = 1.0f);
+
+    m.def("draw_list_add_rect_filled", [](float x1, float y1, float x2, float y2, ImU32 col,
+                                          float rounding, int rounding_corners_flags) {
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), col, rounding,
+                                                  static_cast<ImDrawFlags>(rounding_corners_flags));
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("col"),
+       py::arg("rounding") = 0.0f, py::arg("rounding_corners_flags") = 0);
+
+    m.def("draw_list_add_circle", [](float x, float y, float radius, ImU32 col, int num_segments, float thickness) {
+        ImGui::GetWindowDrawList()->AddCircle(ImVec2(x, y), radius, col, num_segments, thickness);
+    }, py::arg("x"), py::arg("y"), py::arg("radius"), py::arg("col"),
+       py::arg("num_segments") = 0, py::arg("thickness") = 1.0f);
+
+    m.def("draw_list_add_circle_filled", [](float x, float y, float radius, ImU32 col, int num_segments) {
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(x, y), radius, col, num_segments);
+    }, py::arg("x"), py::arg("y"), py::arg("radius"), py::arg("col"), py::arg("num_segments") = 0);
+
+    m.def("draw_list_add_text", [](float x, float y, ImU32 col, const std::string& text) {
+        ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), col, text.c_str());
+    }, py::arg("x"), py::arg("y"), py::arg("col"), py::arg("text"));
+
+    m.def("draw_list_add_triangle", [](float x1, float y1, float x2, float y2, float x3, float y3,
+                                       ImU32 col, float thickness) {
+        ImGui::GetWindowDrawList()->AddTriangle(ImVec2(x1, y1), ImVec2(x2, y2), ImVec2(x3, y3), col, thickness);
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("x3"), py::arg("y3"),
+       py::arg("col"), py::arg("thickness") = 1.0f);
+
+    m.def("draw_list_add_triangle_filled", [](float x1, float y1, float x2, float y2, float x3, float y3, ImU32 col) {
+        ImGui::GetWindowDrawList()->AddTriangleFilled(ImVec2(x1, y1), ImVec2(x2, y2), ImVec2(x3, y3), col);
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("x3"), py::arg("y3"), py::arg("col"));
+
+    m.def("draw_list_add_quad", [](float x1, float y1, float x2, float y2, float x3, float y3,
+                                   float x4, float y4, ImU32 col, float thickness) {
+        ImGui::GetWindowDrawList()->AddQuad(ImVec2(x1, y1), ImVec2(x2, y2), ImVec2(x3, y3), ImVec2(x4, y4), col, thickness);
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("x3"), py::arg("y3"),
+       py::arg("x4"), py::arg("y4"), py::arg("col"), py::arg("thickness") = 1.0f);
+
+    m.def("draw_list_add_quad_filled", [](float x1, float y1, float x2, float y2, float x3, float y3,
+                                          float x4, float y4, ImU32 col) {
+        ImGui::GetWindowDrawList()->AddQuadFilled(ImVec2(x1, y1), ImVec2(x2, y2), ImVec2(x3, y3), ImVec2(x4, y4), col);
+    }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("x3"), py::arg("y3"),
+       py::arg("x4"), py::arg("y4"), py::arg("col"));
 }
 
 }  // namespace PY4GW::imgui_bindings

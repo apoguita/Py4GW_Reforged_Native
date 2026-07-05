@@ -235,29 +235,42 @@ void UpdateLoopStep() {
         }
     }
 
-    RunAutoexecOnce();
-    RunWidgetManagerOnce();
+    // Everything Python-side (library bring-up, frame callbacks, script + widget
+    // updates) waits until the account-email anchor resolves - i.e. we have
+    // reached a valid map/character at least once. UpdateAccountAnchor() above
+    // keeps retrying every frame until it latches. C++ infra (map-change poll,
+    // texture decode) runs regardless.
+    const bool py_ready = PY4GW::System::Instance().HasAccountEmail();
+
+    if (py_ready) {
+        RunAutoexecOnce();
+        RunWidgetManagerOnce();
+    }
 
     // Resume dialog callbacks once a map transition settles (legacy called
     // Dialog::PollMapChange from the update loop before the GIL).
     GW::dialog::PollMapChange();
 
-    using PyCallback = PY4GW::PyCallback;
-    PyCallback::ExecutePhase(PyCallback::Phase::PreUpdate, PyCallback::Context::Update);
-    PyCallback::ExecutePhase(PyCallback::Phase::Data, PyCallback::Context::Update);
-    PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Update);
+    if (py_ready) {
+        using PyCallback = PY4GW::PyCallback;
+        PyCallback::ExecutePhase(PyCallback::Phase::PreUpdate, PyCallback::Context::Update);
+        PyCallback::ExecutePhase(PyCallback::Phase::Data, PyCallback::Context::Update);
+        PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Update);
+    }
 
     // Drain queued texture CPU-decode jobs (async DAT texture pipeline).
     GW::textures::GWDatReader::Instance().CpuUpdate();
 
-    const uint64_t frame_id = PY4GW::System::GetTickCount64();
-    PY4GW::Profiler::Start("Update.Script");
-    PY4GW::python_runtime::ExecutePythonUpdate();
-    PY4GW::Profiler::End(frame_id, "Update.Script");
+    if (py_ready) {
+        const uint64_t frame_id = PY4GW::System::GetTickCount64();
+        PY4GW::Profiler::Start("Update.Script");
+        PY4GW::python_runtime::ExecutePythonUpdate();
+        PY4GW::Profiler::End(frame_id, "Update.Script");
 
-    PY4GW::Profiler::Start("Update.WidgetManager");
-    PY4GW::python_runtime::ExecuteWidgetManagerUpdate();
-    PY4GW::Profiler::End(frame_id, "Update.WidgetManager");
+        PY4GW::Profiler::Start("Update.WidgetManager");
+        PY4GW::python_runtime::ExecuteWidgetManagerUpdate();
+        PY4GW::Profiler::End(frame_id, "Update.WidgetManager");
+    }
     ::Sleep(10);
 }
 
@@ -297,24 +310,30 @@ void DrawLoop(IDirect3DDevice9* device) {
     }
 
     if (!gate_skips) {
-        using PyCallback = PY4GW::PyCallback;
-        const uint64_t frame_id = PY4GW::System::GetTickCount64();
+        // Python-side draw work (frame callbacks, script + widget draw, deferred
+        // actions) waits until the account-email anchor resolves - same gate as
+        // the update loop, i.e. a valid map/character reached at least once. The
+        // console UI + ImGui frame lifecycle below are C++ and stay available.
+        if (PY4GW::System::Instance().HasAccountEmail()) {
+            using PyCallback = PY4GW::PyCallback;
+            const uint64_t frame_id = PY4GW::System::GetTickCount64();
 
-        PyCallback::ExecutePhase(PyCallback::Phase::PreUpdate, PyCallback::Context::Draw);
-        PyCallback::ExecutePhase(PyCallback::Phase::Data, PyCallback::Context::Draw);
+            PyCallback::ExecutePhase(PyCallback::Phase::PreUpdate, PyCallback::Context::Draw);
+            PyCallback::ExecutePhase(PyCallback::Phase::Data, PyCallback::Context::Draw);
 
-        PY4GW::Profiler::Start("Draw.Script");
-        PY4GW::python_runtime::ExecutePythonDraw();
-        PY4GW::Profiler::End(frame_id, "Draw.Script");
+            PY4GW::Profiler::Start("Draw.Script");
+            PY4GW::python_runtime::ExecutePythonDraw();
+            PY4GW::Profiler::End(frame_id, "Draw.Script");
 
-        PY4GW::Profiler::Start("Draw.WidgetManager");
-        PY4GW::python_runtime::ExecuteWidgetManagerDraw();
-        PY4GW::Profiler::End(frame_id, "Draw.WidgetManager");
+            PY4GW::Profiler::Start("Draw.WidgetManager");
+            PY4GW::python_runtime::ExecuteWidgetManagerDraw();
+            PY4GW::Profiler::End(frame_id, "Draw.WidgetManager");
 
-        PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Draw);
-        PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Main);
+            PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Draw);
+            PyCallback::ExecutePhase(PyCallback::Phase::Update, PyCallback::Context::Main);
 
-        PY4GW::python_runtime::ProcessDeferredActions();
+            PY4GW::python_runtime::ProcessDeferredActions();
+        }
 
         bool request_shutdown = false;
         PY4GW::imgui::RenderConsoleUi(&request_shutdown);
@@ -406,6 +425,12 @@ void Py4GW_Shutdown() {
     if (!g_running) {
         return;
     }
+
+    // Stop the crash handler from reporting expected teardown-order faults as crashes.
+    // It stays installed until CrashHandler::Terminate() runs last (in DllMain), but
+    // from here on OnException no-ops so subsystem teardown can't spawn spurious,
+    // half-written crash folders. Runs on both shutdown paths (RuntimeThread + detach).
+    CrashHandler::NotifyShutdown();
 
     StopRunningScriptForShutdown();
 

@@ -28,6 +28,7 @@
 namespace {
 
 volatile LONG s_handling = 0;
+volatile LONG s_shutting_down = 0;
 bool s_installed = false;
 LPTOP_LEVEL_EXCEPTION_FILTER s_prev_filter = nullptr;
 PVOID s_vectored_handler = nullptr;
@@ -48,10 +49,15 @@ char s_panic_message[1024] = {0};
 char s_panic_file[260] = {0};
 char s_panic_function[128] = {0};
 unsigned int s_panic_line = 0;
-char s_context_phase[64] = {0};
-char s_context_module[64] = {0};
-char s_context_operation[128] = {0};
-char s_context_detail[256] = {0};
+// Crash context is per-thread: the update and draw threads both stamp a
+// "callback" context every frame (ExecutePhase), so shared globals raced and the
+// sidecar showed an empty/wrong operation. thread_local means the crash handler,
+// which runs on the faulting thread, reads that thread's own last stamp - so a
+// callback fault names the exact culprit callback.
+thread_local char s_context_phase[64] = {0};
+thread_local char s_context_module[64] = {0};
+thread_local char s_context_operation[128] = {0};
+thread_local char s_context_detail[256] = {0};
 
 const char* ExceptionLabel(DWORD code) {
     switch (code) {
@@ -167,18 +173,22 @@ void MakeDirTree(const wchar_t* path) {
 void BuildReportFolder(wchar_t* out, size_t cap) {
     SYSTEMTIME time = {};
     ::GetLocalTime(&time);
+    // A single crash is reported twice - the vectored handler first, then the
+    // top-level (structured) filter ~1s later - which previously produced two
+    // folders differing only in the seconds field. Drop the seconds so both land
+    // in one folder (same name -> the second report overwrites the first). The
+    // PID-TID suffix still keeps genuinely distinct crashes apart.
     _snwprintf_s(
         out,
         cap,
         _TRUNCATE,
-        L"%s\\py4gw-%04u%02u%02u-%02u%02u%02u-%lu-%lu",
+        L"%s\\py4gw-%04u%02u%02u-%02u%02u-%lu-%lu",
         s_crash_dir,
         time.wYear,
         time.wMonth,
         time.wDay,
         time.wHour,
         time.wMinute,
-        time.wSecond,
         ::GetCurrentProcessId(),
         ::GetCurrentThreadId());
 }
@@ -341,6 +351,13 @@ void CrashHandler::Terminate() {
     Logger::Instance().LogInfo("[CrashHandler] torn down.");
 }
 
+void CrashHandler::NotifyShutdown() {
+    // Called at the START of the shutdown sequence (before subsystems tear down) so
+    // OnException stops writing reports for expected teardown-order faults, while the
+    // handler itself stays installed until Terminate() runs last.
+    ::InterlockedExchange(&s_shutting_down, 1);
+}
+
 void CrashHandler::SetDumpGenerationEnabled(bool enabled) {
     s_dump_generation_enabled = enabled;
 }
@@ -482,6 +499,15 @@ uintptr_t __cdecl CrashHandler::AppendStackDetour(void* debug_info, uint32_t a2,
 }
 
 bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, bool recoverable) {
+    // Suppress crash reports once teardown has begun. Crash capture is torn down
+    // LAST (so it can catch shutdown crashes), which means the vectored handler is
+    // still live while other subsystems tear down; their expected teardown-order
+    // first-chance faults would otherwise spawn spurious, half-written crash folders
+    // (an empty stack file, no json, as the process exits mid-write). The process is
+    // closing, so nothing captured here is actionable.
+    if (::InterlockedCompareExchange(&s_shutting_down, 0, 0) != 0) {
+        return false;
+    }
     const char* source_label = SourceLabel(source);
     const bool write_dump = s_dump_generation_enabled && ShouldWriteDumpForSource(source);
     if (::InterlockedCompareExchange(&s_handling, 1, 0) != 0) {

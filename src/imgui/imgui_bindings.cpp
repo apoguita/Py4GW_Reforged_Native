@@ -142,6 +142,17 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
         else ImGui::PushFont(nullptr);
     }, py::arg("font_index") = 0);
     m.def("pop_font", &ImGui::PopFont);
+    // Legacy font-scaling entry points (used by ImGui.py push_font/pop_font). ImGui 1.92
+    // renders a font at an explicit size via PushFont(font, size); the library passes a
+    // scale relative to the font's designed size (ImFont::LegacySize), so the baked size
+    // is LegacySize * scale. Each pushes/pops exactly one font-stack entry (balanced).
+    m.def("push_font_scaled", [](int idx, float scale) {
+        auto& fonts = ImGui::GetIO().Fonts->Fonts;
+        ImFont* font = (idx >= 0 && idx < fonts.Size) ? fonts[idx] : nullptr;
+        const float base = font ? font->LegacySize : ImGui::GetFontSize();
+        ImGui::PushFont(font, base * scale);
+    }, py::arg("font_index"), py::arg("scale") = 1.0f);
+    m.def("pop_font_scaled", &ImGui::PopFont);
 
     // ═══════════════ TEXT ═══════════════════════════════════════
     m.def("text_unformatted", &ImGui::TextUnformatted, py::arg("text"), py::arg("text_end") = nullptr);

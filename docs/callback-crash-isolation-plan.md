@@ -41,15 +41,25 @@ The NULL callable means something REGISTERED a bad callable (None?) or the store
 `src/callback/callback.cpp`, just above `PyCallback::ExecutePhase`:
 
 ```cpp
-static bool g_process_callbacks = false;  // CURRENT: callbacks OFF (surface bring-up)
+static constexpr PyCallback::Phase g_max_enabled_phase = PyCallback::Phase::Data;
 ```
 
-CURRENT STATE (2026-07-04): set to FALSE by owner - callbacks are OFF so injection
-survives and we can test the SURFACE (imports). Set true + rebuild only when ready to
-attack callbacks. `ExecutePhase` returns immediately when it is false. Plain compile-time bool - NO
-Python control (reaching Python requires the surface to already inject). Flip +
-rebuild to switch. This is the ONLY sanctioned change to the callback system; do not
-add more machinery here.
+CURRENT STATE (2026-07-04): GRADUATED phase gate. The three phases run in the order
+PreUpdate(0) -> Data(1) -> Update(2); `ExecutePhase` runs a phase only if it is <=
+`g_max_enabled_phase` and returns immediately otherwise (callbacks still register,
+they just do not fire). Now that the surface is up, the owner is bringing the layers
+online ONE AT A TIME to bisect the NULL-callable crash:
+  - `PreUpdate` CONFIRMED STABLE (no crash) once all Python is gated on the
+    account-email latch (see below).
+  - `Data` = CURRENT (just enabled).
+  - next: raise to `Update`, rebuild, test.
+If injection survives with a layer enabled, the bad callable is in a LATER phase; if
+it crashes, the culprit registered on the enabled phase (bisect with PauseById /
+RemoveByName within it). History: this was a plain `bool g_process_callbacks = false`
+(all phases off) during surface bring-up; replaced with the phase gate to enable the
+first layer. Compile-time only - no Python control (reaching Python requires the
+surface to already inject). This is the ONLY sanctioned change to the callback
+system; do not add more machinery here.
 
 ## Strategy (owner-directed): separate SURFACE from CALLBACKS
 
@@ -161,6 +171,19 @@ add more machinery here.
   (ImGuisrc.py:3665) should be PySystem.get_credits(); Console.Console.MessageType
   double-Console typo (HotkeyManager.py:87,90) should be Console.MessageType.
 
+- 2026-07-04: `AttributeError: module 'Py4GW.Console' has no attribute 'get_projects_path'`
+  (Py4GW_widget_catalog.py:1105, class body). Root: the legacy catch-all Py4GW.Console
+  is dead; reforged split it into PySystem submodules. Owner: "full migration of the
+  console to the system console, no duplicates, no shims." DONE (see memory
+  console-fully-consolidated-pysystem): deterministic sweep of 2534 usages / 203 .py
+  files -> PySystem.Console (log), PySystem.window (window), PySystem.script_control
+  (run/load/stop/defer), PyProfiler (profiler), PySystem.get_credits. Verified: every
+  PySystem/PyProfiler ref has its import; compileall clean; 0 residual Py4GW.Console in
+  active .py. NATIVE: removed the duplicate Py4GW.Console submodule from
+  python_runtime.cpp (nothing native/bootstrap used it; widget mgr is native-hosted).
+  NEEDS REBUILD (bundles with quest + skillbar native changes). Excluded: Legacy archive,
+  .md, Settings.py.bak. Bridge Client defer_load/run/stop = native gap (flagged).
+
 ### REQUIRED before callbacks go back on (runtime landmine, not a surface/import issue)
 RawItemCache (ItemCache.py) still BUILDS `PyInventory.Bag(bag, str(bag))` at runtime
 (line 78, in update()) and its whole consumer chain reads bag OBJECTS. Native
@@ -237,3 +260,118 @@ observe. Record findings back here and in `python-migration-progress.md` every s
   only allowed addition, owner-requested for debugging).
 - Trust the owner's empirical diagnosis; bisect around the change they name.
 - No shims; no auto-builds (owner rebuilds).
+
+## Update 2026-07-04: all Python gated on the account-email latch
+
+Owner: "the library load is gated by waiting to get into a valid map at least once to
+get the email handler - make the python callbacks wait for that too; all python code
+should wait for that gate."
+
+Implemented in `src/Py4GW.cpp` (UpdateLoopStep + DrawLoop): a single latch
+`PY4GW::System::Instance().HasAccountEmail()` (atomic, set once by UpdateAccountAnchor
+when a valid character/map context first exposes the account email) now gates ALL
+Python-side work in both loops:
+  - update loop: RunAutoexecOnce / RunWidgetManagerOnce (library bring-up), the three
+    ExecutePhase callbacks, ExecutePythonUpdate, ExecuteWidgetManagerUpdate.
+  - draw loop: the Draw-context ExecutePhase callbacks, ExecutePythonDraw,
+    ExecuteWidgetManagerDraw, ProcessDeferredActions.
+C++ infra stays ungated and keeps running before the latch: shared-memory update,
+UpdateAccountAnchor (must run to set the latch), SettingsManager, PollMapChange,
+texture CpuUpdate/DxUpdate, ImGui BeginFrame/EndFrame, and RenderConsoleUi (console
+must stay visible). Combined with g_max_enabled_phase=PreUpdate, the first callback
+layer now fires only once we've been in a valid map/character - the intended clean
+baseline before attacking the NULL-callable crash. Needs rebuild.
+
+## Update 2026-07-04: Data layer crashes -> ConfigManager.FlushDiskData; crash visibility fixed
+
+Enabled Data (g_max_enabled_phase=Data). Client closes at injection once in a valid map.
+Crash sidecar (F:\GW\GW1\crashes\py4gw-20260704-2243*): c0000005 in
+python313.dll!PyBytes_Repeat <- PyObject_Vectorcall <- pybind unpacking_collector::call
+<- ExecutePhase (callback.cpp:190 t->fn()) <- UpdateLoopStep (Py4GW.cpp:258 =
+ExecutePhase(Phase::Data, Context::Update)). Same NULL/garbage-callable signature as before.
+
+CULPRIT (static analysis): the ONLY loaded Data-phase + Update-context registrant is
+`ConfigManager.FlushDiskData` = `IniManager._flush_callback` (Py4GWCoreLib/IniManager.py:63
+name, :275 body, registered :85 at import via IniManager.enable() line 631, priority 99).
+(UIManager Data cb is context=Draw; the AgentContext Data cb is inside a triple-quote
+comment; CombatEvents is disabled in __init__.py.) So Data == this one callback.
+
+TWO crash-handler fixes (need rebuild):
+1. Visibility: the crash-context globals (s_context_*) were plain shared globals, but BOTH
+   the update and draw threads stamp a "callback" context every frame in ExecutePhase, so
+   the value read at fault time raced -> sidecar showed operation:"" instead of the callback
+   name. Made s_context_* thread_local (CrashHandler.cpp) - the handler runs on the faulting
+   thread, so it now reads that thread's own last stamp and the .json names the exact
+   callback. After rebuild, context.operation should read "ConfigManager.FlushDiskData".
+2. Double folder: one crash was reported twice (VEH then SEH ~1s apart) into two folders
+   differing only in the seconds field. Dropped seconds from BuildReportFolder's name
+   (py4gw-YYYYMMDD-HHMM-PID-TID) so both land in one folder; PID-TID keeps distinct crashes
+   apart.
+
+Next: with the name confirmed, root-cause why FlushDiskData's stored py::function is
+NULL/garbage when Data fires (registered fine as a staticmethod, so suspect corruption of
+the callback storage from an earlier Python path, or the callable freed). Fix at the Python
+SOURCE / find the corruption - never the dispatcher.
+
+## Update 2026-07-04: ROOT CAUSE = dangling Task* in ExecutePhase; crash context now carries phase
+
+Re-analysis of the Data crash (one folder now, double-folder fix works): the sidecar's
+context.operation was STILL empty even after making s_context_* thread_local - so it is NOT
+the thread race. In `SetContext("runtime","callback", t->name)` the "runtime"/"callback"
+LITERALS survive but t->name comes back empty => dereferencing `t` yields garbage. `t` is a
+DANGLING pointer. Same cause explains the garbage callable (t->fn -> PyBytes_Repeat).
+
+ROOT CAUSE (dispatcher bug, overturns "dispatcher is correct"): `Tasks()` is a
+`std::vector<Task>`; `ExecutePhase` builds `phase_tasks` as raw `Task*` INTO that vector,
+releases the mutex, then fires callbacks. Any callback that calls PyCallback.Register (=>
+tasks.push_back, may REALLOCATE) or RemoveBy* (=> erase) during the phase invalidates every
+pointer in phase_tasks -> next t->fn() is use-after-realloc. Enabling Data brings in a
+callback that re-registers/removes mid-phase. PROPOSED FIX (awaiting owner OK, since this
+touches the off-limits dispatcher): snapshot the matching tasks BY VALUE (copy id/name/fn
+with the GIL held - py::function is refcounted so the callable stays alive even if removed)
+and iterate the copies; lock order stays GIL->Mutex like Register. Alt: stable container
+(deque/list) for Tasks().
+
+DONE (diagnostic, not dispatch logic; needs rebuild): ExecutePhase now stamps the crash
+context operation with "<Context>.<Phase>[index/count]" computed from the function ARGS +
+loop counter (reliable even when the Task is corrupt); the possibly-garbage callback name
+moved to the detail field. So a callback fault now always names at least the phase/context
+and slot in the sidecar - e.g. operation "Update.Data[0/1]". This also validates the
+SetContext mechanism end to end.
+
+## Update 2026-07-04: FIX APPLIED - ExecutePhase snapshots tasks by value
+
+Owner approved touching the dispatcher. Applied the snapshot-by-value fix in
+src/callback/callback.cpp ExecutePhase:
+- Acquire the GIL up front (moved above the snapshot) - copying a py::function inc_refs a
+  Python object and needs the GIL. Phase gate still returns before the GIL, so disabled
+  phases cost nothing.
+- phase_tasks is now std::vector<Task> (value copies) instead of std::vector<Task*>. Under
+  the Mutex we copy each matching Task (incl. its py::function, a live ref that keeps the
+  callable alive for the frame even if it is Removed). Lock order GIL->Mutex matches
+  Register, so no deadlock. The Mutex is released before firing; the loop iterates the
+  copies, so any Register/Remove a callback triggers mid-phase can reallocate/erase Tasks()
+  without dangling anything. Loop is `for (const Task& t : phase_tasks)` (was Task*).
+This removes the entire use-after-realloc crash class (NULL / PyBytes_Repeat garbage
+callable + empty crash-context name). The phase/slot crash stamp stays as belt-and-suspenders
+visibility. Why Python had nothing to say: the fault was a hardware access violation in
+PyObject_Vectorcall on a freed py::function handle - before any Python frame - so neither the
+per-callback try/catch nor sys.unraisablehook could see it. Needs rebuild; with Data (and
+then Update) enabled it should no longer crash.
+
+## Update 2026-07-04: SNAPSHOT FIX CONFIRMED - all phases enabled; crash-handler noise fixed
+
+Owner confirmed the snapshot-by-value fix stopped the crash (PreUpdate+Data stable, no crash
+in operation). Enabled ALL phases: g_max_enabled_phase = PyCallback::Phase::Update (PreUpdate
++ Data + Update all fire). The callback NULL/garbage-callable blocker is RESOLVED.
+
+Crash-handler noise cleaned up alongside:
+- Double folder per crash: fixed earlier by dropping the seconds from BuildReportFolder
+  (py4gw-YYYYMMDD-HHMM-PID-TID) so the VEH + SEH reports of one crash coalesce.
+- Empty crash folder on a clean run: diagnosed as a SHUTDOWN artifact - crash capture is torn
+  down LAST, so the vectored handler is still live while subsystems tear down; an expected
+  teardown-order first-chance access violation made OnException create a folder + empty stack
+  then die mid-write (no json, no CRASH log line - confirmed: none in the injection log, log
+  ended at "process detached"). Fixed with a s_shutting_down latch: CrashHandler::NotifyShutdown()
+  (called first thing in Py4GW_Shutdown, both RuntimeThread + DllMain-detach paths) makes
+  OnException no-op, while the handler stays installed until Terminate() runs last. Needs rebuild.

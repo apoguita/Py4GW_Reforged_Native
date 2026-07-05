@@ -36,6 +36,9 @@ public:
 
     void Initialize();
     void Terminate();
+    // Flag that shutdown has begun so no crash reports are written for expected
+    // teardown-order faults (the handler stays installed until Terminate()).
+    static void NotifyShutdown();
     void SetDumpGenerationEnabled(bool enabled);
     bool IsDumpGenerationEnabled() const;
 

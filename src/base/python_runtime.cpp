@@ -325,62 +325,9 @@ PYBIND11_EMBEDDED_MODULE(Py4GW, m) {
         return process_manager::GetModuleDirectory().string();
     });
 
-    py::module_ console = m.def_submodule("Console", "Console output bindings (screen-only; see PySystem for full control)");
-    console.def("log", [](const std::string& module_name, const std::string& message, const std::string& level) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, level, message);
-    }, py::arg("module_name"), py::arg("message"), py::arg("level") = "INFO");
-    console.def("info", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Info, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("warning", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Warning, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("error", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Error, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("notice", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Notice, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("success", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Success, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("debug", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Debug, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("performance", [](const std::string& module_name, const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage(module_name, MessageType::Performance, message);
-    }, py::arg("module_name"), py::arg("message"));
-    console.def("print", [](const std::string& message) {
-        PY4GW::System::Instance().WriteConsoleMessage("Python", MessageType::Info, message);
-    }, py::arg("message"));
-    console.def("load", [](const std::string& path) {
-        SetSelectedScriptPath(path);
-        return LoadSelectedScript();
-    }, py::arg("path"));
-    console.def("run", []() {
-        return RunScript();
-    });
-    console.def("stop", []() {
-        StopScript();
-    });
-    console.def("pause", []() {
-        return PauseScript();
-    });
-    console.def("resume", []() {
-        return ResumeScript();
-    });
-    console.def("status", []() {
-        return GetScriptStatus();
-    });
-    console.def("defer_load_and_run", [](const std::string& path, int delay_ms) {
-        DeferLoadAndRun(path, delay_ms);
-    }, py::arg("path"), py::arg("delay_ms") = 1000);
-    console.def("defer_stop_load_and_run", [](const std::string& path, int delay_ms) {
-        DeferStopLoadAndRun(path, delay_ms);
-    }, py::arg("path"), py::arg("delay_ms") = 1000);
-    console.def("defer_stop_and_run", [](int delay_ms) {
-        DeferStopAndRun(delay_ms);
-    }, py::arg("delay_ms") = 1000);
+    // Py4GW.Console removed: the console is fully consolidated onto PySystem (no
+    // duplicate, no shim). Logging -> PySystem.Console, window control ->
+    // PySystem.window, script control (load/run/stop/defer) -> PySystem.script_control.
 
     py::module_ shared_memory = m.def_submodule("SharedMemory", "Shared memory publisher bindings");
     shared_memory.def("is_ready", []() {
@@ -479,6 +426,16 @@ bool Initialize() {
         if (!root.empty()) {
             sys.attr("path").attr("insert")(0, root.string());
             sys.attr("path").attr("insert")(0, (root / "scripts").string());
+
+            // The injected process inherits the game's working directory, but widgets
+            // and scripts open payload files (Widgets/, Config/, offsets/, ...) by paths
+            // relative to the DLL. Point the working directory at the module directory so
+            // those relative reads resolve against the payload, not the game folder.
+            if (::SetCurrentDirectoryW(root.wstring().c_str())) {
+                logger.LogInfo(std::string("[python] working directory set to module dir: ") + root.string());
+            } else {
+                logger.LogError("[python] failed to set working directory to module dir; relative file reads may fail.");
+            }
         }
         logger.LogInfo("[python] Step 3 OK: sys.path configured.");
 

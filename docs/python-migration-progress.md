@@ -305,3 +305,121 @@ B) Native binding work (needs owner rebuild). Recommended order, PySkill FIRST
 Per-module edit plans: session scratchpad `specs/<Module>.json` (call_mapping +
 spec_markdown). DECISION NEEDED from owner: do the native bindings as one batch for
 a single rebuild, or module-by-module (PySkill first) with a rebuild each.
+
+## Update 2026-07-04: PySkillbar legacy CLASSES migrated (Skillbar + SkillbarSkill)
+
+Owner directive: "PySkillbar should have been migrated from legacy, not just a ctypes
+struct. Even the methods from legacy need to be migrated - that was a class."
+
+The reforged `PySkillbar` previously exposed only free functions (use_skill,
+load_skill_template, ...) + ctypes contexts for data. Legacy `PySkillbar` also exposed
+two proper classes that in-repo widgets still drive directly:
+  - `PySkillbar.SkillbarSkill` (per-slot: `.id` (a SkillID), adrenaline_a/b, recharge,
+    event, get_recharge).
+  - `PySkillbar.Skillbar` (ctor snapshots player skillbar; GetContext / GetSkill(1-8) /
+    UseSkill / UseSkillTargetless / HeroUseSkill / LoadSkillTemplate /
+    LoadHeroSkillTemplate / ChangeHeroSecondary / GetHeroSkillbar / GetHoveredSkill /
+    IsSkillUnlocked / IsSkillLearnt; readonly agent_id/disabled/casting/skills).
+
+Both now MIGRATED as native pybind classes in `src/GW/skillbar/skillbar_bindings.cpp`
+(module PySkillbar), over `GW::Context::SkillbarSkill` / `GW::Context::Skillbar` and
+delegating actions to `GW::skillbar::*`. `SkillbarSkill.id` returns a `PySkill.SkillID`
+(constructed via `py::module_::import("PySkill").attr("SkillID")(int)`) so legacy
+`.id.id` / `.id.GetName()` keep working - no cross-TU type, no shared header, no alias.
+Free functions retained (library Skillbar.py facade uses them). Needs owner rebuild.
+
+Consumers that require these classes: Sources/frenkeyLib/Polymock/{combat,gui}.py
+(`PySkillbar.Skillbar().GetSkill(N).get_recharge`, `dict[int, SkillbarSkill]`),
+Widgets/.../Factions Character Leveler.py + Kilroy...py (`skillbar.UseSkillTargetless`),
+EZ Cast.py + AccountData.py (`PySkillbar.SkillbarSkill` annotations).
+
+CAVEAT (not shimmed): `GLOBAL_CACHE.SkillBar.GetSkillData(slot)` (library Skillbar.py)
+returns the ctypes `SkillbarSkillStruct` (field `.skill_id`), NOT the native
+SkillbarSkill (`.id.id`). combat.py mixes both APIs (line ~297 uses GetSkillData().id.id).
+Left for owner decision: either point GetSkillData at the native class, or migrate the
+combat.py library-path call to `.skill_id`. Did not shim the ctypes struct or rewrite
+the third-party widget unprompted.
+
+## Update 2026-07-04 (batch 2): post-skillbar-rebuild error log triage
+
+Skillbar class migration CONFIRMED working (no more PySkillbar errors; clean startup).
+Remaining widget-load failures from error_log.txt worked through:
+
+NATIVE (needs rebuild) - PyImgui font scaling:
+- `PyImGui.push_font_scaled(font_idx, scale)` + `pop_font_scaled()` were missing (live
+  runtime error every frame in the widget catalog via ImGui.py push_font/pop_font). Added
+  to src/imgui/imgui_bindings.cpp next to push_font/pop_font. ImGui 1.92 renders a font at
+  an explicit size via PushFont(font, size); scale is relative to ImFont::LegacySize
+  (designed size), so baked size = LegacySize*scale. Each pushes/pops one stack entry.
+
+PYTHON (no rebuild) - dead-API repoints in widgets/library:
+- `from PyParty import Hero` removed from AccountData.py + Quest Data.py (unused dead
+  import; PyParty.Hero has no reforged binding, name->id table only).
+- `import PyPointers` removed from Scanner Test.py (unused; pointers come from shmem now).
+- `PyInventory.PyInventory()`: LDoA.py had an unused module-level instance (removed);
+  Py4GW_DEMO.py used only `.AcceptSalvageWindow()` -> `PyInventory.accept_salvage_window()`.
+- AttributeClass: `from PyAgent import Profession, AttributeClass` (SkillInfo.py, and EZ
+  Cast.py transitively) - Profession already lives in the library enums; AttributeClass did
+  NOT exist. Added a flexible `AttributeClass` to enums_src/GameData_enums.py (exported via
+  enums.py), returned by Skill.Attribute.GetAttribute + SkillCache._Attribute.GetAttribute.
+  It is int-comparable (`== 15`) AND carries `.attribute_id`/`.id`/`.level`/`.level_base`/
+  `.GetName()` - because GetAttribute consumers are inconsistent: Vaettir does `== 15`,
+  Checks.py (CORE lib, was already broken on raw int) + EliteSkillsCapture do `.attribute_id`,
+  SkillInfo + DEMO do `.GetName()`/`.level`. Same flexible-type approach as Vec2. GetName uses
+  the in-file AttributeNames dict (no GWEncoded dependency, no circular import); invalid id ->
+  "Unknown". Tested standalone against all consumer shapes. SkillInfo.py import repointed to
+  `from Py4GWCoreLib import Profession, AttributeClass`.
+
+FLAGGED for owner (NOT auto-fixed): InventoryPlus.py drives a salvage state machine
+(`IsSalvaging()`, `IsSalvageTransactionDone()`, `FinishSalvage()`) that NEVER existed in the
+legacy PyInventory (only Salvage + AcceptSalvageWindow) nor the library Inventory facade. It
+needs a real rewrite against the reforged salvage-session model (PyInventory.salvage /
+PyItem.salvage_session_done / accept_salvage_window); the exact IsSalvaging/FinishSalvage
+semantics can't be safely guessed. Did not fabricate methods or shim.
+
+NON-CODE (owner/config, not dead-API): missing .ini files (Sulfurous Runner.ini,
+GetBlessed_window.ini) fail at load - runtime config, out of migration scope.
+
+## Update 2026-07-04 (batch 3): flat draw_list_* PyImGui functions
+
+Batch 2 CONFIRMED (push_font_scaled, dead-import removals, AttributeClass, LDoA/DEMO all
+loaded). New live runtime error: `PyImGui.draw_list_add_text` missing (ImGui.py search_field
+via widget catalog). The reforged only had the ImDrawList class (get_window_draw_list().add_*),
+but the library/widgets drive the LEGACY flat draw_list_* free functions extensively.
+
+Ported all 10 flat functions the repo actually uses to src/imgui/bindings/drawlist.cpp
+(register_drawlist), each operating on ImGui::GetWindowDrawList() with loose x/y like legacy
+py_imgui.cpp: add_line, add_rect, add_rect_filled, add_circle, add_circle_filled, add_text,
+add_triangle, add_triangle_filled, add_quad, add_quad_filled. Signatures match legacy exactly
+(verified call arities in library+widgets). NB: ImGui 1.92.8 swapped AddRect's trailing
+(thickness, flags) - pass in the new order + cast the corner-flags int to ImDrawFlags. Needs
+owner rebuild.
+
+Still pending: InventoryPlus.py salvage state machine (flagged batch 2, owner decision).
+
+## Update 2026-07-04 (batch 4): InventoryPlus.py salvage state machine MIGRATED (not flagged)
+
+Owner directive: "whatever is missing from the python code is because it did not get
+migrated from legacy - you will have to migrate it." (i.e. do NOT flag/defer; migrate.)
+
+InventoryPlus.py was HALF-migrated: its main salvage flow already used the reforged
+library Inventory facade (SalvageItem / AcceptSalvageMaterialsWindow / HandleSalvageChoiceDialog),
+but the "advanced kit tracking" branch still drove the legacy `PyInventory.PyInventory()`
+object (Salvage / IsSalvaging / IsSalvageTransactionDone / FinishSalvage) which the reforged
+never bound (its salvage-session state lives in the library via UI-frame detection). Also
+used legacy `PyInventory.Bag(id, name)` for bag sizes.
+
+The functionality was NOT actually missing - it exists in the reforged library Inventory
+facade. So this was a WIDGET migration, no native change, no duplication:
+- `PyInventory.PyInventory()` gate -> a plain bool (`True if advanced_kit_tracking else None`).
+- `.Salvage(kit, item)`            -> `Inventory.SalvageItem(item, kit)` (arg order swap).
+- `.IsSalvaging()`                 -> `Inventory.IsSalvageChoiceDialogVisible()`.
+- `.IsSalvageTransactionDone()`    -> `Inventory.IsSalvageChoiceMaterialConfirmVisible()`.
+- `.FinishSalvage()`               -> `Inventory.AcceptSalvageMaterialsWindow()`.
+- `PyInventory.Bag(id,name).GetSize()` -> `PyInventory.get_bag(id).get("size", 0)` (2 sites).
+Mapping is consistent with the non-advanced path (which already uses the same facade helpers).
+py_compile clean.
+
+Principle recorded: a widget calling a legacy API means it existed in legacy; find the
+reforged equivalent (native fn / library facade) and migrate the call - never stub, shim,
+or leave it flagged. Native flat draw_list_* (batch 3) still awaits owner rebuild.
