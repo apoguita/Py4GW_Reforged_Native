@@ -5,9 +5,12 @@
 #include <imgui.h>
 
 #include "imgui/bindings.h"
+#include "imgui/font_manager.h"
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -80,22 +83,40 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
 
     PY4GW::imgui_bindings::register_style(m);
     // ═══════════════ WINDOW ═════════════════════════════════════
+    // Legacy parity: begin has THREE overloads - (name) / (name, flags) / (name, p_open,
+    // flags) - all returning the window-visible bool. The library calls begin(name),
+    // begin(name, flags) AND begin(name, True, flags); the single bool* overload did not
+    // accept the 2-arg (name, flags) form. p_open is taken BY VALUE (the library passes
+    // True/False literals and reads only the return), matching legacy ImGui_Begin.
+    m.def("begin", [](const char* name) -> bool { return ImGui::Begin(name); },
+          py::arg("name"));
+    m.def("begin", [](const char* name, int flags) -> bool { return ImGui::Begin(name, nullptr, flags); },
+          py::arg("name"), py::arg("flags"));
+    // 3rd overload: legacy bool* p_open (accepts None -> nullptr, or a bool). flags is
+    // NOT defaulted so this overload can never shadow the 2-arg begin(name, flags) form.
+    // (A greedy py::object p_open with a defaulted flags matched begin(name, flags_enum),
+    // then threw on enum->bool - pybind enums have no __bool__ - silently killing the
+    // window under the draw catch-all.)
     m.def("begin", py::overload_cast<const char*, bool*, ImGuiWindowFlags>(&ImGui::Begin),
-          py::arg("name"), py::arg("p_open") = nullptr, py::arg("flags") = 0);
+          py::arg("name"), py::arg("p_open"), py::arg("flags"));
     m.def("end", &ImGui::End);
     m.def("begin_with_close", [](const char* name, bool p_open, int flags) -> py::tuple {
         bool open = p_open; bool vis = ImGui::Begin(name, &open, flags); return py::make_tuple(vis, open);
     }, py::arg("name"), py::arg("p_open"), py::arg("flags") = 0);
 
     m.def("begin_child", py::overload_cast<const char*, const ImVec2&, ImGuiChildFlags, ImGuiWindowFlags>(&ImGui::BeginChild),
-          py::arg("str_id"), py::arg("size") = ImVec2(0,0), py::arg("child_flags") = 0, py::arg("window_flags") = 0);
+          py::arg("id"), py::arg("size") = ImVec2(0,0), py::arg("border") = 0, py::arg("flags") = 0);  // legacy kwarg names id/size/border/flags
     m.def("end_child", &ImGui::EndChild);
     m.def("begin_group", &ImGui::BeginGroup); m.def("end_group", &ImGui::EndGroup);
     m.def("begin_disabled", &ImGui::BeginDisabled, py::arg("disabled") = true);
     m.def("end_disabled", &ImGui::EndDisabled);
 
     // ═══════════════ WINDOW SETUP ═══════════════════════════════
+    m.def("set_next_window_pos", [](float x, float y, ImGuiCond cond){ ImGui::SetNextWindowPos(ImVec2(x, y), cond); },
+          py::arg("x"), py::arg("y"), py::arg("cond") = 0);  // legacy two-float overload
     m.def("set_next_window_pos", &ImGui::SetNextWindowPos, py::arg("pos"), py::arg("cond") = 0, py::arg("pivot") = ImVec2(0,0));
+    m.def("set_next_window_size", [](float w, float h, ImGuiCond cond){ ImGui::SetNextWindowSize(ImVec2(w, h), cond); },
+          py::arg("width"), py::arg("height"), py::arg("cond") = 0);  // legacy two-float overload
     m.def("set_next_window_size", &ImGui::SetNextWindowSize, py::arg("size"), py::arg("cond") = 0);
     m.def("set_next_window_size_constraints", [](const ImVec2& min, const ImVec2& max) { ImGui::SetNextWindowSizeConstraints(min, max); },
           py::arg("size_min"), py::arg("size_max"));
@@ -106,7 +127,11 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("set_next_window_scroll", &ImGui::SetNextWindowScroll, py::arg("scroll"));
     m.def("set_next_window_viewport", &ImGui::SetNextWindowViewport, py::arg("viewport_id"));
 
+    m.def("set_window_pos", [](float x, float y, ImGuiCond cond){ ImGui::SetWindowPos(ImVec2(x, y), cond); },
+          py::arg("x"), py::arg("y"), py::arg("cond") = 0);  // legacy three-scalar form
     m.def("set_window_pos", py::overload_cast<const ImVec2&, ImGuiCond>(&ImGui::SetWindowPos), py::arg("pos"), py::arg("cond") = 0);
+    m.def("set_window_size", [](float w, float h, ImGuiCond cond){ ImGui::SetWindowSize(ImVec2(w, h), cond); },
+          py::arg("width"), py::arg("height"), py::arg("cond") = 0);  // legacy three-scalar form
     m.def("set_window_size", py::overload_cast<const ImVec2&, ImGuiCond>(&ImGui::SetWindowSize), py::arg("size"), py::arg("cond") = 0);
     m.def("set_window_collapsed", py::overload_cast<bool, ImGuiCond>(&ImGui::SetWindowCollapsed), py::arg("collapsed"), py::arg("cond") = 0);
     m.def("set_window_focus", py::overload_cast<const char*>(&ImGui::SetWindowFocus), py::arg("name"));
@@ -136,21 +161,32 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("get_frame_height", &ImGui::GetFrameHeight);
     m.def("get_frame_height_with_spacing", &ImGui::GetFrameHeightWithSpacing);
     m.def("get_font_size", &ImGui::GetFontSize);
+    // ImGui 1.92: fonts are dynamic. A FontId resolves to one of 4 style fonts
+    // (each with Font Awesome merged) rendered at its designed size via
+    // PushFont(font, size). See FontManager.
     m.def("push_font", [](int idx) {
-        auto& fonts = ImGui::GetIO().Fonts->Fonts;
-        if(idx >= 0 && idx < fonts.Size) ImGui::PushFont(fonts[idx]);
-        else ImGui::PushFont(nullptr);
+        using PY4GW::imgui::FontId;
+        auto& mgr = PY4GW::imgui::FontManager::Instance();
+        if (idx >= 0 && idx < static_cast<int>(FontId::Count)) {
+            const auto id = static_cast<FontId>(idx);
+            ImGui::PushFont(mgr.Get(id), mgr.GetSize(id));
+        } else {
+            ImGui::PushFont(nullptr, 0.0f);
+        }
     }, py::arg("font_index") = 0);
     m.def("pop_font", &ImGui::PopFont);
-    // Legacy font-scaling entry points (used by ImGui.py push_font/pop_font). ImGui 1.92
-    // renders a font at an explicit size via PushFont(font, size); the library passes a
-    // scale relative to the font's designed size (ImFont::LegacySize), so the baked size
-    // is LegacySize * scale. Each pushes/pops exactly one font-stack entry (balanced).
+    // Font-scaling entry points (used by ImGui.py push_font/pop_font). Renders the
+    // FontId's style font at (designed size * scale). Each pushes/pops exactly one
+    // font-stack entry (balanced).
     m.def("push_font_scaled", [](int idx, float scale) {
-        auto& fonts = ImGui::GetIO().Fonts->Fonts;
-        ImFont* font = (idx >= 0 && idx < fonts.Size) ? fonts[idx] : nullptr;
-        const float base = font ? font->LegacySize : ImGui::GetFontSize();
-        ImGui::PushFont(font, base * scale);
+        using PY4GW::imgui::FontId;
+        auto& mgr = PY4GW::imgui::FontManager::Instance();
+        if (idx >= 0 && idx < static_cast<int>(FontId::Count)) {
+            const auto id = static_cast<FontId>(idx);
+            ImGui::PushFont(mgr.Get(id), mgr.GetSize(id) * scale);
+        } else {
+            ImGui::PushFont(nullptr, ImGui::GetFontSize() * scale);
+        }
     }, py::arg("font_index"), py::arg("scale") = 1.0f);
     m.def("pop_font_scaled", &ImGui::PopFont);
 
@@ -191,7 +227,11 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("radio_button", [](const char* label, int v, int btn) -> int {
         if (ImGui::RadioButton(label, v == btn)) v = btn; return v;
     }, py::arg("label"), py::arg("value"), py::arg("v_button"));
-    m.def("progress_bar", &ImGui::ProgressBar, py::arg("fraction"), py::arg("size_arg") = ImVec2(-FLT_MIN,0), py::arg("overlay") = nullptr);
+    // Legacy took loose floats (fraction, size_x, size_y, overlay); the library calls it
+    // with 4 positional args. Reforged had a single ImVec2-size binding that rejected them.
+    m.def("progress_bar", [](float fraction, float size_x, float size_y, const char* overlay){
+        ImGui::ProgressBar(fraction, ImVec2(size_x, size_y), (overlay && overlay[0]) ? overlay : nullptr);
+    }, py::arg("fraction"), py::arg("size_arg_x") = -1.0f, py::arg("size_arg_y") = 0.0f, py::arg("overlay") = nullptr);
     m.def("bullet", &ImGui::Bullet);
     m.def("checkbox_flags", [](const char* label, int flags, int flags_value) -> int {
         ImGui::CheckboxFlags(label, &flags, flags_value);
@@ -272,8 +312,10 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
         ImGui::InputDouble(label, &v, step, step_fast, fmt, flags); return v;
     }, py::arg("label"), py::arg("v"), py::arg("step") = 0.0, py::arg("step_fast") = 0.0, py::arg("format") = "%.6f", py::arg("flags") = 0);
     m.def("input_text", [](const char* label, const std::string& text, int flags) -> std::string {
-        std::vector<char> buf(256);
-        if(!text.empty()) std::copy(text.begin(), text.end(), buf.begin());
+        std::vector<char> buf(256, 0);
+        // Legacy truncated to 256; copy at most 255 bytes (+ NUL). An unbounded copy here
+        // overflowed the fixed 256-byte buffer for long persisted strings (heap corruption).
+        std::copy_n(text.begin(), std::min<size_t>(text.size(), 255), buf.begin());
         ImGui::InputText(label, buf.data(), buf.size(), flags);
         return std::string(buf.data());
     }, py::arg("label"), py::arg("text") = "", py::arg("flags") = 0);
@@ -402,6 +444,7 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     // Legacy columns
     m.def("columns", &ImGui::Columns, py::arg("count") = 1, py::arg("id") = nullptr, py::arg("borders") = true);
     m.def("next_column", &ImGui::NextColumn);
+    m.def("end_columns", []{ ImGui::Columns(1); });  // legacy ImGui_EndColumns: reset to a single column
     m.def("set_column_width", &ImGui::SetColumnWidth, py::arg("column_index"), py::arg("width"));
     m.def("set_column_offset", &ImGui::SetColumnOffset, py::arg("column_index"), py::arg("offset_x"));
     m.def("get_column_index", &ImGui::GetColumnIndex);

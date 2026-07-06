@@ -423,3 +423,61 @@ py_compile clean.
 Principle recorded: a widget calling a legacy API means it existed in legacy; find the
 reforged equivalent (native fn / library facade) and migrate the call - never stub, shim,
 or leave it flagged. Native flat draw_list_* (batch 3) still awaits owner rebuild.
+
+## Update 2026-07-04 (batch 5): text_colored arg-order + widget UIs = Phase.Update callbacks
+
+Post callback-fix run: only ONE error type in error_log (50x) - text_colored arg order.
+Library/legacy call is text_colored(text, color) (py_imgui.cpp:16 ImGui_TextColored(text,
+color); 577 vs 1 call sites text-first), but the reforged native binding is
+text_colored(color, text). FIXED in the imgui_flex facade (Py4GWCoreLib/imgui_flex.py):
+text_colored(a, b, *rest) routes any order (text,color)/(color,text)/(r,g,b,a,text) and
+tuple/list/Vec4 color to the native (r,g,b,a,text) overload. Python-only, NO rebuild,
+fixes all 754 call sites. Tested standalone.
+
+KEY insight for "callbacks silently failing, widget UIs not showing, no errors": widgets
+register update/draw/main as PyCallback callbacks on **Phase.Update** (WidgetManager.py
+~2095-2122; contexts Update/Draw/Main). So while g_max_enabled_phase was Data, Phase.Update
+NEVER FIRED -> no widget UI and nothing to error (the tooltip text_colored errors we saw come
+from the WidgetHandler catalog path, not a callback). Enabling all phases
+(g_max_enabled_phase=Update, prior turn) makes them fire; with text_colored fixed the draws
+no longer abort. Callback errors are NOT swallowed - they go discard_as_unraisable ->
+sys.unraisablehook -> redirected sys.stderr -> error_log, so any real widget error will now
+show once the callbacks fire. Needs the pending native rebuild (Update phase + NotifyShutdown).
+
+## Update 2026-07-05 (batch 6): PyImGui binding parity audit vs legacy — silent no-render fixed
+
+Owner: widgets render nothing beyond the widget-manager UI, no error (HeroAI shows no UI
+via widget manager OR console). Root: reforged migrated the PyImGui bindings FROM legacy
+py_imgui.cpp and several were changed in ways that silently break rendering. Ran a parallel
+legacy-vs-reforged binding audit (workflow) over all 168 library-used functions. 14
+divergences found; ROOT CAUSE + fixes applied (all grounded in the legacy source):
+
+NATIVE (src/imgui/imgui_bindings.cpp, needs rebuild):
+- begin: legacy had 3 overloads (name)/(name,flags)/(name,p_open,flags); reforged collapsed
+  to 1. My interim fix made the 3rd a greedy py::object p_open with defaulted flags, which
+  matched begin(name, flags_enum) then threw on enum->bool (pybind enums have no __bool__) -
+  silent window death. FIXED: 3 overloads; 3rd is legacy bool* with flags REQUIRED (no
+  default) so it can't shadow the 2-arg (name, flags) form.
+- set_next_window_pos/size, set_window_pos/size: added legacy two-float scalar overloads
+  (ImVec2 only converts from tuple, not bare scalars).
+- end_columns: was NOT BOUND (AttributeError aborted widget draw before end_group ->
+  unbalanced group + stuck columns). Added m.def("end_columns", []{ ImGui::Columns(1); }).
+- progress_bar: legacy loose (fraction, x, y, overlay) float form restored (was single
+  ImVec2-size binding rejecting the 4-arg calls).
+- begin_child: restored legacy kwarg names id/size/border/flags (reforged renamed to
+  str_id/child_flags/window_flags, breaking keyword callers).
+- input_text: HEAP-OVERFLOW fix - unbounded std::copy into a fixed 256-byte buffer ->
+  std::copy_n(..., min(size,255)).
+- types.cpp: py::implicitly_convertible<py::list, ImVec2>() (legacy std::array accepted lists).
+
+FACADE (Py4GWCoreLib/imgui_flex.py, live - no rebuild for these):
+- set_window_pos/size: 2-param wrappers broke on the library's 3-arg (x,y,cond) calls ->
+  widened to (a,b,c) routing to the native scalar overload.
+- begin_table: legacy 5-arg (id,cols,flags,width,height) - args 4,5 are outer_size
+  components, NOT outer_size+inner_width; fold both scalars into the outer_size tuple.
+- push_clip_rect: legacy args 3,4 are WIDTH/HEIGHT (max = min + size); facade was passing
+  them as an absolute max corner -> inverted/empty clip -> everything clipped away silently.
+
+No action (Tier 5): push_style_var2 (no active caller), text_colored + invisible_button
+(already compensated by the facade). Dispatcher/ExecutePhase untouched; no new .cpp (no CMake
+reconfigure). Full audit report: session task w3szmbhth output.

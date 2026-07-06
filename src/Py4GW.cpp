@@ -33,7 +33,6 @@ namespace {
 std::mutex g_runtime_mutex;
 bool g_running = false;
 bool g_shutdown_requested = false;
-bool g_shared_memory_registered = false;
 // One-shot latches for RunAutoexecOnce/RunWidgetManagerOnce; file-scope so
 // the (normally disabled) debug probe window can display them.
 bool g_autoexec_done = false;
@@ -391,10 +390,7 @@ bool Py4GW_Initialize() {
     PY4GW::listeners::Initialize();
 
     auto& manager = GW::shared_memory::RuntimeManager();
-    if (!g_shared_memory_registered) {
-        g_shared_memory_registered = GW::shared_memory::RegisterDefaultSegments(manager);
-    }
-    if (g_shared_memory_registered && !manager.IsValid()) {
+    if (!manager.IsValid()) {
         const auto name = GW::shared_memory::Manager::BuildName(
             L"Py4GW_Runtime",
             ::GetCurrentProcessId(),

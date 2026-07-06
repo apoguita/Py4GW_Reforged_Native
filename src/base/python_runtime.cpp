@@ -344,34 +344,6 @@ PYBIND11_EMBEDDED_MODULE(Py4GW, m) {
         const auto* header = GW::shared_memory::RuntimeManager().Header();
         return header ? header->sequence : 0u;
     });
-    shared_memory.def("get_frame_counter", []() {
-        const auto* header = GW::shared_memory::RuntimeManager().Header();
-        return header ? header->frame_counter : 0ull;
-    });
-    shared_memory.def("list_segments", []() {
-        return GW::shared_memory::RuntimeManager().GetSegmentNames();
-    });
-    shared_memory.def("get_segment", [](const std::string& name) {
-        py::dict result;
-        const auto descriptor = GW::shared_memory::RuntimeManager().GetSegmentDescriptor(name);
-        if (!descriptor.has_value()) {
-            return result;
-        }
-        result["name"] = std::string(descriptor->name);
-        result["offset"] = descriptor->offset;
-        result["size"] = descriptor->size;
-        result["update_interval_frames"] = descriptor->update_interval_frames;
-        result["publish_count"] = descriptor->publish_count;
-        result["last_published_frame"] = descriptor->last_published_frame;
-        result["last_result"] = descriptor->last_result;
-        return result;
-    }, py::arg("name"));
-    shared_memory.def("set_update_interval", [](const std::string& name, uint32_t frames) {
-        return GW::shared_memory::RuntimeManager().SetSegmentUpdateInterval(name, frames);
-    }, py::arg("name"), py::arg("frames"));
-    shared_memory.def("publish_now", [](const std::string& name) {
-        return GW::shared_memory::RuntimeManager().PublishSegment(name);
-    }, py::arg("name"));
 
     py::module_ imgui = m.def_submodule("ImGui", "Minimal ImGui bindings for script smoke tests");
     imgui.def("begin", [](const std::string& name) {

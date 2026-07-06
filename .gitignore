@@ -3,6 +3,7 @@
 /.vs/
 /.build/
 /.artifacts/
+/.opencode/
 
 # Visual Studio / MSBuild
 *.suo

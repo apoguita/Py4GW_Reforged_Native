@@ -5,6 +5,7 @@
 #include "GW/map/map.h"
 #include "system/system.h"
 
+#include <memory>
 #include <utility>
 
 namespace py = pybind11;
@@ -38,13 +39,30 @@ PYBIND11_EMBEDDED_MODULE(PyGameThread, m) {
         if (!MapReady()) {
             return;
         }
-        GW::game_thread::Enqueue([fn = std::move(fn)]() mutable {
+        // The game thread destroys queued std::functions (game_thread
+        // CallFunctions '.clear()' / ClearCalls) WITHOUT holding the GIL. A bare
+        // py::function capture would then decref a Python object off-GIL -> access
+        // violation (0xC0000005 in Py_Dealloc). Own the callable through a
+        // shared_ptr whose deleter reacquires the GIL, so the final destruction is
+        // always GIL-safe (guarded against interpreter finalization so we never
+        // touch Python state during shutdown).
+        std::shared_ptr<py::function> callable(
+            new py::function(std::move(fn)),
+            [](py::function* p) {
+                if (Py_IsInitialized()) {
+                    py::gil_scoped_acquire gil;
+                    delete p;
+                }
+                // else: interpreter finalized -> intentionally leak the small handle
+                // rather than perform an off-GIL decref during shutdown.
+            });
+        GW::game_thread::Enqueue([callable]() {
             if (!MapReady()) {
                 return;
             }
             py::gil_scoped_acquire gil;
             try {
-                fn();
+                (*callable)();
             } catch (const py::error_already_set& error) {
                 PY4GW::System::Instance().WriteConsoleMessage(
                     "PyGameThread", MessageType::Error, std::string("Game thread callback error: ") + error.what());

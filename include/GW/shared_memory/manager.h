@@ -1,62 +1,102 @@
 #pragma once
 
+#include "base/error_handling.h"
+
 #include <Windows.h>
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <functional>
-#include <optional>
 #include <string>
-#include <string_view>
-#include <vector>
 
-#include "GW/context/context.h"
-
+// Shared-memory runtime region.
+//
+// This is a faithful port of the legacy Py4GW shared memory: a single fixed
+// contiguous region laid out as
+//
+//     [ SharedMemoryHeader ][ AgentArray_SHMemStruct ][ Pointers_SHMemStruct ]
+//
+// published every frame under a sequence-lock. The Python reader
+// (Py4GWCoreLib/native_src/ShMem/SysShaMem.py) mirrors these structs byte for
+// byte and locates the two payloads at fixed offsets derived from struct sizes.
+//
+// The Pointers block is the single, unified pointer directory (it supersedes the
+// legacy standalone PyPointers module): every top-level game context address is
+// published here, and Python materializes each via ctypes at the shared address
+// (the DLL and the interpreter share the game's address space).
+//
+// Layout is fixed and must stay in lockstep with the Python mirrors. Do not add
+// descriptor tables, per-segment directories, or reorder fields without updating
+// the Python structs in the same change.
 namespace GW::shared_memory {
 
-enum class SegmentResult : uint32_t {
-    Ok = 0,
-    NotDue = 1,
-    CallbackFailed = 2,
-    Exception = 3,
-};
+inline constexpr uint32_t kAgentArrayMaxSize = 300;
+inline constexpr uint32_t kSharedMemoryVersion = 1;
 
+// 24 bytes, natural alignment (matches the Python _pack_=1 mirror: no padding is
+// introduced because window_handle is already 8-aligned at offset 16).
 struct SharedMemoryHeader {
-    uint32_t version = Context::kSharedMemoryVersion;
+    uint32_t version = kSharedMemoryVersion;
     uint32_t total_size = 0;
     uint32_t sequence = 0;
     uint32_t process_id = 0;
     uint64_t window_handle = 0;
-    uint64_t frame_counter = 0;
-    uint64_t last_publish_tick = 0;
-    uint32_t descriptor_count = 0;
-    uint32_t descriptor_offset = 0;
 };
 
-struct SegmentDescriptor {
-    char name[Context::kSharedMemorySegmentNameCapacity] = {};
-    uint32_t offset = 0;
-    uint32_t size = 0;
-    uint32_t update_interval_frames = 1;
-    uint32_t publish_count = 0;
-    uint64_t last_published_frame = 0;
-    uint32_t last_result = static_cast<uint32_t>(SegmentResult::NotDue);
-    uint32_t reserved = 0;
+#pragma pack(push, 1)
+struct Agent_SHMemStruct {
+    uintptr_t ptr = 0;
+    uint32_t agent_id = 0;
 };
 
-struct SegmentOptions {
-    uint32_t update_interval_frames = 1;
-    bool zero_before_write = true;
-    bool clear_on_failure = true;
-    // Toggle. When false the slot is kept but published as all zeros, so the
-    // layout never changes. Flip at the subscribe line or at runtime via
-    // SetSegmentEnabled. (To remove a struct entirely, comment its subscribe
-    // line - that DOES shift the layout, by design.)
-    bool enabled = true;
+struct AgentRef_SHMemStruct {
+    uint32_t agent_id = 0;
+    uint32_t index = 0;
 };
 
-using WriterCallback = std::function<bool(void* payload, size_t size, uint64_t frame_counter)>;
+struct AgentRefArray_SHMemStruct {
+    uint32_t count = 0;
+    AgentRef_SHMemStruct entries[kAgentArrayMaxSize] = {};
+};
+
+struct AgentArray_SHMemStruct {
+    uint32_t max_size = kAgentArrayMaxSize;
+    uint32_t AgentArrayCount = 0;
+    Agent_SHMemStruct AgentArray[kAgentArrayMaxSize] = {};
+    AgentRefArray_SHMemStruct AllArray = {};
+    AgentRefArray_SHMemStruct AllyArray = {};
+    AgentRefArray_SHMemStruct NeutralArray = {};
+    AgentRefArray_SHMemStruct EnemyArray = {};
+    AgentRefArray_SHMemStruct SpiritPetArray = {};
+    AgentRefArray_SHMemStruct MinionArray = {};
+    AgentRefArray_SHMemStruct NPCMinipetArray = {};
+    AgentRefArray_SHMemStruct LivingArray = {};
+    AgentRefArray_SHMemStruct ItemArray = {};
+    AgentRefArray_SHMemStruct OwnedItemArray = {};
+    AgentRefArray_SHMemStruct GadgetArray = {};
+    AgentRefArray_SHMemStruct DeadAllyArray = {};
+    AgentRefArray_SHMemStruct DeadEnemyArray = {};
+};
+
+// The unified pointer directory (merged PyPointers). Every field is a game
+// context address; 0 means "not resolved this frame".
+struct Pointers_SHMemStruct {
+    uintptr_t MissionMapContext = 0;
+    uintptr_t WorldMapContext = 0;
+    uintptr_t GameplayContext = 0;
+    uintptr_t InstanceInfo = 0;
+    uintptr_t MapContext = 0;
+    uintptr_t GameContext = 0;
+    uintptr_t PreGameContext = 0;
+    uintptr_t WorldContext = 0;
+    uintptr_t CharContext = 0;
+    uintptr_t AgentContext = 0;
+    uintptr_t CinematicContext = 0;
+    uintptr_t GuildContext = 0;
+    uintptr_t AvailableCharacters = 0;
+    uintptr_t PartyContext = 0;
+    uintptr_t ServerRegionContext = 0;
+};
+#pragma pack(pop)
 
 class Manager {
 public:
@@ -66,133 +106,59 @@ public:
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
 
-    // Register an arbitrary payload writer. Writers are startup-only: the
-    // shared memory layout becomes fixed once Create() succeeds.
-    bool RegisterSegment(std::string_view name, size_t size, WriterCallback writer, const SegmentOptions& options = {});
-
-    template <typename T>
-    bool RegisterStruct(
-        std::string_view name,
-        std::function<bool(T& value, uint64_t frame_counter)> writer,
-        const SegmentOptions& options = {}) {
-        // Convenience wrapper for typed payloads. The writer receives a T
-        // reference that points directly into the mapped shared memory region.
-        return RegisterSegment(
-            name,
-            sizeof(T),
-            [writer = std::move(writer)](void* payload, size_t size, uint64_t frame_counter) -> bool {
-                if (!(payload && size == sizeof(T) && writer)) {
-                    return false;
-                }
-                return writer(*static_cast<T*>(payload), frame_counter);
-            },
-            options);
-    }
-
-    // ------------------------------------------------------------------
-    // Subscription surface (the per-module *_shared_memory.cpp files use
-    // these). One line per struct. Every subscription carries the same
-    // enable/disable toggle: enabled -> writes the data, disabled -> writes
-    // zeros into the same slot (layout unchanged). Comment the line out to
-    // remove the struct entirely (that shifts the layout - by design).
-    //
-    // SubscribeStruct  : copy the singleton's data into its slot each frame
-    //                    (map-ready gated).
-    // SubscribePointer : publish only the address (8 bytes); Python
-    //                    materializes it via ctypes.
-    // SubscribeSnapshot: a fixed-size POD the writer fills (e.g. the classified
-    //                    agent array).
-    // The full-struct vs pointer choice per struct is the caller's, not this
-    // class's - this class only transports whatever a line subscribes.
-    // ------------------------------------------------------------------
-    template <typename T>
-    bool SubscribeStruct(std::string_view name, T* (*getter)(), bool enabled = true) {
-        SegmentOptions options;
-        options.enabled = enabled;
-        return RegisterStruct<T>(name, [getter](T& value, uint64_t) -> bool {
-            if (!PublishGuardReady()) {
-                return false;
-            }
-            const T* source = getter();
-            if (!source) {
-                return false;
-            }
-            std::memcpy(&value, source, sizeof(T));
-            return true;
-        }, options);
-    }
-
-    bool SubscribePointer(std::string_view name, std::function<uintptr_t()> getter, bool enabled = true);
-
-    template <typename T>
-    bool SubscribeSnapshot(std::string_view name, std::function<bool(T& value, uint64_t frame_counter)> filler, bool enabled = true) {
-        SegmentOptions options;
-        options.enabled = enabled;
-        return RegisterStruct<T>(name, std::move(filler), options);
-    }
-
-    // Runtime toggle for any subscribed segment (enabled -> data, disabled ->
-    // zeros; slot and layout preserved either way).
-    bool SetSegmentEnabled(std::string_view name, bool enabled);
-
-    // Publish safety gate shared by every SubscribeStruct writer: never deep-copy
-    // a game context while a map transition is in flight (the game thread rebuilds
-    // the context tree concurrently -> reproducible 0xC0000005 in the memcpy).
-    static bool PublishGuardReady();
-
-    // Materialize the shared-memory layout after every segment has been
-    // registered. This computes descriptor offsets and allocates one backing
-    // file mapping for all segments.
+    // Create the fixed runtime region (sized to hold the header + agent array +
+    // pointers block). Idempotent: a second call after a successful Create is a
+    // no-op that returns true.
     bool Create(const std::wstring& name);
     void Destroy();
 
-    // Publish every due segment according to its per-segment frame interval.
+    // Publish one frame: bump the sequence odd, refill the agent array and the
+    // pointer directory, bump the sequence even. Safe to call every frame.
     bool Update();
-    // Force publication of one segment regardless of its scheduled interval.
-    bool PublishSegment(std::string_view name);
-
-    bool SetSegmentUpdateInterval(std::string_view name, uint32_t update_interval_frames);
-    std::optional<SegmentDescriptor> GetSegmentDescriptor(std::string_view name) const;
-    std::vector<SegmentDescriptor> GetSegmentDescriptors() const;
-    std::vector<std::string> GetSegmentNames() const;
 
     bool IsValid() const;
-    const std::wstring& Name() const;
-    size_t Size() const;
     void* Data() const;
+    size_t Size() const;
+    const std::wstring& Name() const;
     SharedMemoryHeader* Header() const;
-
-    template <typename T>
-    T* PayloadAs(size_t offset) const {
-        auto* data = PayloadData(offset, sizeof(T));
-        return data ? static_cast<T*>(data) : nullptr;
-    }
 
     static std::wstring BuildName(const wchar_t* prefix, DWORD process_id, HWND window_handle = nullptr);
 
-private:
-    struct SegmentRegistration {
-        SegmentDescriptor descriptor = {};
-        WriterCallback writer;
-        SegmentOptions options = {};
-    };
+    // Fixed-layout offsets (must match the Python reader's offset math).
+    static constexpr size_t AgentArrayPayloadOffset() {
+        return sizeof(SharedMemoryHeader);
+    }
+    static constexpr size_t PointersPayloadOffset() {
+        return AgentArrayPayloadOffset() + sizeof(AgentArray_SHMemStruct);
+    }
+    static constexpr size_t RuntimeRegionSize() {
+        return PointersPayloadOffset() + sizeof(Pointers_SHMemStruct);
+    }
 
-    SegmentRegistration* FindRegistration(std::string_view name);
-    const SegmentRegistration* FindRegistration(std::string_view name) const;
-    SegmentDescriptor* DescriptorAt(size_t index) const;
-    void* PayloadData(size_t offset, size_t size) const;
-    bool PublishRegistration(SegmentRegistration& registration, uint64_t frame_counter, bool force);
+private:
+    // Sequence-lock helpers: BeginWrite makes the sequence odd (write in
+    // progress), EndWrite makes it even (quiescent). Readers accept a snapshot
+    // only when the sequence is even and unchanged across the read.
     void BeginWrite() const;
     void EndWrite() const;
+
+    void* PayloadData(size_t offset) const;
+    template <typename T>
+    T* PayloadAs(size_t offset) const {
+        return static_cast<T*>(PayloadData(offset));
+    }
+
+    AgentArray_SHMemStruct* AgentArraySMStruct() const;
+    Pointers_SHMemStruct* PointersSMStruct() const;
+    bool UpdateAgentArrayRegion();
+    bool UpdatePointersRegion();
 
     HANDLE mapping_handle_ = nullptr;
     void* view_ = nullptr;
     size_t total_size_ = 0;
     std::wstring name_;
-    std::vector<SegmentRegistration> registrations_;
 };
 
 Manager& RuntimeManager();
-bool RegisterDefaultSegments(Manager& manager);
 
 }  // namespace GW::shared_memory

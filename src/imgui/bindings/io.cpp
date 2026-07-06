@@ -28,9 +28,17 @@ void register_io(py::module_& m) {
     py::class_<IOHandle>(m, "ImGuiIO")
         // ── read-only state (per-frame) ──
         .def_property_readonly("display_size", [](IOHandle&) { return LiveIO().DisplaySize; })
+        // Flattened _x/_y accessors for legacy parity (the library reads display_size_x /
+        // mouse_pos_x, not the Vec2 form).
+        .def_property_readonly("display_size_x", [](IOHandle&) { return LiveIO().DisplaySize.x; })
+        .def_property_readonly("display_size_y", [](IOHandle&) { return LiveIO().DisplaySize.y; })
         .def_property_readonly("delta_time", [](IOHandle&) { return LiveIO().DeltaTime; })
         .def_property_readonly("framerate", [](IOHandle&) { return LiveIO().Framerate; })
         .def_property_readonly("mouse_pos", [](IOHandle&) { return LiveIO().MousePos; })
+        .def_property_readonly("mouse_pos_x", [](IOHandle&) { return LiveIO().MousePos.x; })
+        .def_property_readonly("mouse_pos_y", [](IOHandle&) { return LiveIO().MousePos.y; })
+        .def_property_readonly("mouse_pos_prev_x", [](IOHandle&) { return LiveIO().MousePosPrev.x; })
+        .def_property_readonly("mouse_pos_prev_y", [](IOHandle&) { return LiveIO().MousePosPrev.y; })
         .def_property_readonly("mouse_wheel", [](IOHandle&) { return LiveIO().MouseWheel; })
         .def_property_readonly("mouse_wheel_h", [](IOHandle&) { return LiveIO().MouseWheelH; })
         .def_property_readonly("key_ctrl", [](IOHandle&) { return LiveIO().KeyCtrl; })

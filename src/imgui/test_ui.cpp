@@ -24,10 +24,11 @@ bool g_show_about_window = false;
 bool g_show_style_editor = false;
 
 void RenderFontLine(const char* label, PY4GW::imgui::FontId id, const char* sample) {
-    ImFont* font = PY4GW::imgui::FontManager::Instance().Get(id);
+    auto& mgr = PY4GW::imgui::FontManager::Instance();
+    ImFont* font = mgr.Get(id);
     ImGui::Text("%s", label);
     if (font) {
-        ImGui::PushFont(font);
+        ImGui::PushFont(font, mgr.GetSize(id));
         ImGui::TextUnformatted(sample);
         ImGui::PopFont();
     } else {
@@ -63,7 +64,7 @@ void RenderFontShowcase() {
 
     ImFont* large_font = PY4GW::imgui::FontManager::Instance().Get(PY4GW::imgui::FontId::Regular46);
     if (large_font) {
-        ImGui::PushFont(large_font);
+        ImGui::PushFont(large_font, PY4GW::imgui::FontManager::Instance().GetSize(PY4GW::imgui::FontId::Regular46));
         ImGui::Text("%s %s %s", ICON_FA_STAR, ICON_FA_HEART, ICON_FA_BELL);
         ImGui::PopFont();
     }

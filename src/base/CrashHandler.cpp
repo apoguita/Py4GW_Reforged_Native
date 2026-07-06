@@ -793,11 +793,11 @@ void CrashHandler::WriteStackTrace(EXCEPTION_POINTERS* info, const wchar_t* stac
     ::CloseHandle(file);
 }
 
-// Walks the CPython frame stack of the crashing thread and writes a Python
-// traceback (file:line in function, innermost first). Read-only and
-// SEH-guarded; refs are intentionally leaked (never dealloc during a crash),
-// and the whole walk no-ops safely if there is no interpreter/thread state
-// (e.g. a crash that did not originate from a Python call).
+// Writes Python context for EVERY crash: walks ALL interpreter thread states
+// (not just the crashing thread), so a fault on a non-Python thread - e.g. the
+// GW game thread destroying a queued callable - still records the live Python
+// stacks (the callback that was actually running). Read-only, SEH-guarded; refs
+// are intentionally leaked (never dealloc during a crash).
 void CrashHandler::WritePythonStackTrace(const wchar_t* pytrace_path) {
     if (::Py_IsInitialized() == 0) {
         return;
@@ -808,47 +808,81 @@ void CrashHandler::WritePythonStackTrace(const wchar_t* pytrace_path) {
     }
     DWORD written = 0;
     __try {
-        PyThreadState* tstate = ::PyGILState_GetThisThreadState();
-        if (tstate == nullptr) {
-            const char* msg = "No active Python thread state on the crashing thread\r\n"
-                              "(the crash did not originate from a Python call).\r\n";
-            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
-            ::CloseHandle(file);
-            return;
-        }
-        PyFrameObject* frame = ::PyThreadState_GetFrame(tstate);
-        if (frame == nullptr) {
-            const char* msg = "No Python frame on the crashing thread.\r\n";
-            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
-            ::CloseHandle(file);
-            return;
-        }
-        const char* header = "Python stack (most recent call first):\r\n";
+        // The fault may be on a NON-Python thread (e.g. the GW game thread
+        // destroying a queued callable) where the crashing thread holds no Python
+        // state. Every crash log must still carry Python context, so we walk every
+        // interpreter thread state and dump each one's live stack, flagging the
+        // crashing thread only if it happens to be a Python thread.
+        PyThreadState* crashing = ::PyGILState_GetThisThreadState();
+
+        const char* header =
+            "Python context at crash - all interpreter threads (most recent call first).\r\n"
+            "The faulting OS thread may hold no Python state (e.g. the GW game thread);\r\n"
+            "the [CRASHING THREAD] marker appears only if it does. The callback that was\r\n"
+            "running is captured here even when the fault is on another thread.\r\n\r\n";
         ::WriteFile(file, header, static_cast<DWORD>(strlen(header)), &written, nullptr);
 
         char line[1400] = {};
-        int depth = 0;
-        while (frame != nullptr && depth < 96) {
-            PyCodeObject* code = ::PyFrame_GetCode(frame);
-            const int lineno = ::PyFrame_GetLineNumber(frame);
-            const char* fname = "<unknown>";
-            const char* qual = "<unknown>";
-            if (code != nullptr) {
-                const char* f = ::PyUnicode_AsUTF8(code->co_filename);
-                const char* q = ::PyUnicode_AsUTF8(code->co_qualname);
-                if (f != nullptr) fname = f;
-                if (q != nullptr) qual = q;
-            }
-            _snprintf_s(line, sizeof(line), _TRUNCATE, "#%02d %s:%d in %s\r\n", depth, fname, lineno, qual);
-            ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+        int thread_count = 0;
+        int threads_with_frames = 0;
 
-            // Move to caller. Strong refs from GetFrame/GetCode/GetBack are
-            // intentionally leaked - never dealloc a Python object mid-crash.
-            frame = ::PyFrame_GetBack(frame);
-            ++depth;
+        for (PyInterpreterState* interp = ::PyInterpreterState_Head();
+             interp != nullptr;
+             interp = ::PyInterpreterState_Next(interp)) {
+            for (PyThreadState* tstate = ::PyInterpreterState_ThreadHead(interp);
+                 tstate != nullptr;
+                 tstate = ::PyThreadState_Next(tstate)) {
+                ++thread_count;
+                const int is_crashing = (crashing != nullptr && tstate == crashing) ? 1 : 0;
+                const unsigned long long tid = ::PyThreadState_GetID(tstate);
+
+                PyFrameObject* frame = ::PyThreadState_GetFrame(tstate);
+                if (frame == nullptr) {
+                    _snprintf_s(line, sizeof(line), _TRUNCATE,
+                        "--- Python thread id=%llu%s: no active frame ---\r\n",
+                        tid, is_crashing ? "  [CRASHING THREAD]" : "");
+                    ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+                    continue;
+                }
+                ++threads_with_frames;
+                _snprintf_s(line, sizeof(line), _TRUNCATE,
+                    "--- Python thread id=%llu%s ---\r\n",
+                    tid, is_crashing ? "  [CRASHING THREAD]" : "");
+                ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+
+                int depth = 0;
+                while (frame != nullptr && depth < 96) {
+                    PyCodeObject* code = ::PyFrame_GetCode(frame);
+                    const int lineno = ::PyFrame_GetLineNumber(frame);
+                    const char* fname = "<unknown>";
+                    const char* qual = "<unknown>";
+                    if (code != nullptr) {
+                        const char* f = ::PyUnicode_AsUTF8(code->co_filename);
+                        const char* q = ::PyUnicode_AsUTF8(code->co_qualname);
+                        if (f != nullptr) fname = f;
+                        if (q != nullptr) qual = q;
+                    }
+                    _snprintf_s(line, sizeof(line), _TRUNCATE, "#%02d %s:%d in %s\r\n", depth, fname, lineno, qual);
+                    ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+
+                    // Strong refs from GetFrame/GetCode/GetBack are intentionally
+                    // leaked - never dealloc a Python object mid-crash.
+                    frame = ::PyFrame_GetBack(frame);
+                    ++depth;
+                }
+                ::WriteFile(file, "\r\n", 2, &written, nullptr);
+            }
+        }
+
+        if (thread_count == 0) {
+            const char* msg = "No Python interpreter thread states were enumerable at crash time.\r\n";
+            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
+        } else if (threads_with_frames == 0) {
+            const char* msg = "Python threads exist but none had an active frame at crash time.\r\n";
+            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        const char* msg = "\r\n[python trace capture faulted - interpreter state was unreadable]\r\n";
+        const char* msg = "\r\n[python trace capture faulted - interpreter state was partially unreadable]\r\n";
         ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
     }
     ::CloseHandle(file);

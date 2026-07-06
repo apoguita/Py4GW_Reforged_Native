@@ -1,7 +1,10 @@
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
+
 #include "GW/camera/camera.h"
+#include "GW/context/context.h"
 
 namespace py = pybind11;
 
@@ -60,4 +63,12 @@ PYBIND11_EMBEDDED_MODULE(PyCamera, m) {
     m.def("set_fog", [](bool flag) {
         return GW::camera::SetFog(flag);
     }, py::arg("flag"));
+
+    // Address of the live camera context (GW::Context::Camera). Python casts a
+    // CameraStruct ctypes mirror at this address to read the ~30 data fields
+    // (yaw/pitch/position/etc.) directly - the reforged data-via-context path,
+    // replacing the legacy PyCamera.PyCamera() data class. 0 if unresolved.
+    m.def("get_context_ptr", []() -> uintptr_t {
+        return reinterpret_cast<uintptr_t>(GW::Context::GetCamera());
+    }, "Address of the live camera context; cast a CameraStruct at it in Python.");
 }

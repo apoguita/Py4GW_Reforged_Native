@@ -28,6 +28,7 @@ void register_types(py::module_& m) {
         .def("__repr__", [](const ImVec2& v) { return "(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ")"; })
         .def("__eq__", [](const ImVec2& a, const ImVec2& b) { return a.x == b.x && a.y == b.y; });
     py::implicitly_convertible<py::tuple, ImVec2>();
+    py::implicitly_convertible<py::list, ImVec2>();  // legacy std::array<float,2> accepted lists too
 
     py::class_<ImVec4>(m, "Vec4")
         .def(py::init<>())
