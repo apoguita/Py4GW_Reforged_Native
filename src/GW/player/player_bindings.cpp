@@ -5,11 +5,13 @@
 #include "GW/player/player.h"
 #include "GW/context/context.h"
 #include "GW/context/character.h"
+#include "GW/context/chat.h"
 #include "GW/context/game.h"
 #include "GW/context/world.h"
 #include "GW/common/constants/friend_list.h"
 #include "GW/map/map.h"
 #include "GW/agent/agent.h"
+#include "GW/chat/chat.h"
 #include "GW/friend_list/friend_list.h"
 #include "GW/game_thread/game_thread.h"
 
@@ -201,19 +203,41 @@ bool PyPlayer::IsAgentIDValid(int agent_id) {
     return GW::agent::GetAgentByID(static_cast<uint32_t>(agent_id)) != nullptr;
 }
 
-// Chat stubs — full implementation requires GW::Chat module
+// Chat history — reads from GW::chat::GetChatLog()
 static std::vector<std::string> g_chat_history;
 static bool g_chat_ready = false;
 
-void PyPlayer::RequestChatHistory()    { g_chat_ready = true; g_chat_history.clear(); }
+void PyPlayer::RequestChatHistory() {
+    g_chat_ready = false;
+    g_chat_history.clear();
+
+    std::thread([]() {
+        auto* log = GW::chat::GetChatLog();
+        if (!log) { g_chat_ready = true; return; }
+        std::vector<std::string> messages;
+        for (size_t i = 0; i < GW::Context::CHAT_LOG_LENGTH; ++i) {
+            auto* entry = log->messages[i];
+            if (entry && entry->message) {
+                std::string msg;
+                for (const wchar_t* p = entry->message; *p; ++p)
+                    msg.push_back(static_cast<char>(*p < 128 ? *p : '?'));
+                messages.push_back(msg);
+            }
+        }
+        g_chat_history = std::move(messages);
+        g_chat_ready = true;
+    }).detach();
+}
 bool PyPlayer::IsChatHistoryReady()    { return g_chat_ready; }
 std::vector<std::string> PyPlayer::GetChatHistory() { return g_chat_history; }
-bool PyPlayer::Istyping()              { return false; }
-void PyPlayer::SendChatCommand(const std::string&) {}
-void PyPlayer::SendChat(char, const std::string&) {}
-void PyPlayer::SendWhisper(const std::string&, const std::string&) {}
-void PyPlayer::SendFakeChat(int, const std::string&) {}
-void PyPlayer::SendFakeChatColored(int, const std::string&, int, int, int) {}
+bool PyPlayer::Istyping()              { return GW::chat::GetIsTyping(); }
+void PyPlayer::SendChatCommand(const std::string& msg) { GW::chat::SendChat('/', msg.c_str()); }
+void PyPlayer::SendChat(char channel, const std::string& msg) { GW::chat::SendChat(channel, msg.c_str()); }
+void PyPlayer::SendWhisper(const std::string& name, const std::string& msg) { GW::chat::SendChat(name.c_str(), msg.c_str()); }
+void PyPlayer::SendFakeChat(int channel, const std::string& message) { GW::chat::SendFakeChat(channel, message); }
+void PyPlayer::SendFakeChatColored(int channel, const std::string& message, int r, int g, int b) {
+    GW::chat::SendFakeChatColored(channel, message, r, g, b);
+}
 
 uint32_t PyPlayer::GetPlayerStatus() {
     return static_cast<uint32_t>(GW::friend_list::GetMyStatus());

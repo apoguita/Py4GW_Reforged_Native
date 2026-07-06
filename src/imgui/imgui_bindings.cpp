@@ -209,6 +209,9 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
           py::arg("color"), py::arg("text"));
     m.def("text_colored", [](float r, float g, float b, float a, const char* t) { ImGui::TextColored(ImVec4(r,g,b,a), "%s", t); },
           py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("text"));
+    // Legacy (text, color) overload — routes to the (color, text) form.
+    m.def("text_colored", [](const char* t, const ImVec4& col) { ImGui::TextColored(col, "%s", t); },
+          py::arg("text"), py::arg("color"));
     m.def("text_disabled", [](const char* t) { ImGui::TextDisabled("%s", t); }, py::arg("text"));
     m.def("text_wrapped", [](const char* t) { ImGui::TextWrapped("%s", t); }, py::arg("text"));
     m.def("bullet_text", [](const char* t) { ImGui::BulletText("%s", t); }, py::arg("text"));
@@ -420,6 +423,11 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("begin_table", &ImGui::BeginTable,
           py::arg("str_id"), py::arg("column"), py::arg("flags") = 0,
           py::arg("outer_size") = ImVec2(0,0), py::arg("inner_width") = 0.0f);
+    // Legacy (id, cols, flags, width, height) overload — packs scalars into outer_size.
+    m.def("begin_table", [](const char* id, int cols, ImGuiTableFlags flags, float width, float height) -> bool {
+        return ImGui::BeginTable(id, cols, flags, ImVec2(width, height));
+    }, py::arg("str_id"), py::arg("column"), py::arg("flags") = 0,
+       py::arg("width") = 0.0f, py::arg("height") = 0.0f);
     m.def("end_table", &ImGui::EndTable);
     m.def("table_next_row", &ImGui::TableNextRow, py::arg("row_flags") = 0, py::arg("min_row_height") = 0.0f);
     m.def("table_next_column", &ImGui::TableNextColumn);
@@ -587,6 +595,10 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
 
     // ═══════════════ CLIP RECT ══════════════════════════════════
     m.def("push_clip_rect", &ImGui::PushClipRect, py::arg("clip_rect_min"), py::arg("clip_rect_max"), py::arg("intersect_with_current_clip_rect"));
+    // Legacy (x, y, width, height, intersect) overload — computes max from min + size.
+    m.def("push_clip_rect", [](float x, float y, float w, float h, bool intersect) {
+        ImGui::PushClipRect(ImVec2(x, y), ImVec2(x + w, y + h), intersect);
+    }, py::arg("x"), py::arg("y"), py::arg("width"), py::arg("height"), py::arg("intersect_with_current_clip_rect"));
     m.def("pop_clip_rect", &ImGui::PopClipRect);
 
     // ═══════════════ FONT ═══════════════════════════════════════

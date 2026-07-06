@@ -8,6 +8,9 @@
 #include "GW/context/context.h"
 #include "GW/context/game.h"
 #include "GW/context/world.h"
+#include "GW/agent/agent.h"
+#include "GW/skillbar/skillbar.h"
+#include "GW/game_thread/game_thread.h"
 #include "GW/ui/ui.h"
 
 #include <string>
@@ -167,6 +170,48 @@ struct PyParty {
 //  Hero implementation (maps legacy hero_data lookup table)
 // ═══════════════════════════════════════════════════════════════════
 
+// Legacy hero name→ID lookup (matches py_party.h hero_data table)
+static const std::pair<const wchar_t*, GW::Constants::HeroID> kHeroNameMap[] = {
+    {L"", GW::Constants::HeroID::NoHero},
+    {L"Norgu", GW::Constants::HeroID::Norgu},
+    {L"Goren", GW::Constants::HeroID::Goren},
+    {L"Tahlkora", GW::Constants::HeroID::Tahlkora},
+    {L"Master Of Whispers", GW::Constants::HeroID::MasterOfWhispers},
+    {L"Acolyte Jin", GW::Constants::HeroID::AcolyteJin},
+    {L"Koss", GW::Constants::HeroID::Koss},
+    {L"Dunkoro", GW::Constants::HeroID::Dunkoro},
+    {L"Acolyte Sousuke", GW::Constants::HeroID::AcolyteSousuke},
+    {L"Melonni", GW::Constants::HeroID::Melonni},
+    {L"Zhed Shadowhoof", GW::Constants::HeroID::ZhedShadowhoof},
+    {L"General Morgahn", GW::Constants::HeroID::GeneralMorgahn},
+    {L"Magrid The Sly", GW::Constants::HeroID::MargridTheSly},
+    {L"Zenmai", GW::Constants::HeroID::Zenmai},
+    {L"Olias", GW::Constants::HeroID::Olias},
+    {L"Razah", GW::Constants::HeroID::Razah},
+    {L"M.O.X.", GW::Constants::HeroID::MOX},
+    {L"Keiran Thackeray", GW::Constants::HeroID::KeiranThackeray},
+    {L"Jora", GW::Constants::HeroID::Jora},
+    {L"Pyre Fierceshot", GW::Constants::HeroID::PyreFierceshot},
+    {L"Anton", GW::Constants::HeroID::Anton},
+    {L"Livia", GW::Constants::HeroID::Livia},
+    {L"Hayda", GW::Constants::HeroID::Hayda},
+    {L"Kahmu", GW::Constants::HeroID::Kahmu},
+    {L"Gwen", GW::Constants::HeroID::Gwen},
+    {L"Xandra", GW::Constants::HeroID::Xandra},
+    {L"Vekk", GW::Constants::HeroID::Vekk},
+    {L"Ogden Stonehealer", GW::Constants::HeroID::Ogden},
+    {L"Mercenary Hero 1", GW::Constants::HeroID::Merc1},
+    {L"Mercenary Hero 2", GW::Constants::HeroID::Merc2},
+    {L"Mercenary Hero 3", GW::Constants::HeroID::Merc3},
+    {L"Mercenary Hero 4", GW::Constants::HeroID::Merc4},
+    {L"Mercenary Hero 5", GW::Constants::HeroID::Merc5},
+    {L"Mercenary Hero 6", GW::Constants::HeroID::Merc6},
+    {L"Mercenary Hero 7", GW::Constants::HeroID::Merc7},
+    {L"Mercenary Hero 8", GW::Constants::HeroID::Merc8},
+    {L"Miku", GW::Constants::HeroID::Miku},
+    {L"Zei Ri", GW::Constants::HeroID::ZeiRi},
+};
+
 Hero::Hero(int id) {
     if (id >= 0 && id <= static_cast<int>(GW::Constants::HeroID::ZeiRi)) {
         hero_id = static_cast<GW::Constants::HeroID>(id);
@@ -174,6 +219,13 @@ Hero::Hero(int id) {
 }
 
 Hero::Hero(const std::string& name) {
+    std::wstring wname(name.begin(), name.end());
+    for (const auto& entry : kHeroNameMap) {
+        if (wname == entry.first) {
+            hero_id = entry.second;
+            return;
+        }
+    }
     hero_id = GW::Constants::HeroID::NoHero;
 }
 
@@ -295,11 +347,14 @@ int PyParty::GetAgentHeroID(int agent_id) {
     return static_cast<int>(GW::party::get_agent_hero_id(static_cast<GW::party::AgentID>(agent_id)));
 }
 int PyParty::GetAgentIDByLoginNumber(int login_number) {
-    // Reforged: use agent module
-    return 0; // Needs agent module access
+    return static_cast<int>(GW::agent::GetAgentIdByLoginNumber(static_cast<uint32_t>(login_number)));
 }
 std::string PyParty::GetPlayerNameByLoginNumber(int login_number) {
-    return ""; // Needs agent module access
+    wchar_t* name = GW::agent::GetPlayerNameByLoginNumber(static_cast<uint32_t>(login_number));
+    if (!name) return {};
+    std::string result;
+    for (; *name; ++name) result.push_back(static_cast<char>(*name < 128 ? *name : '?'));
+    return result;
 }
 bool PyParty::SearchParty(uint32_t type, const std::string& ad) {
     auto wad = StrToWide(ad);
@@ -316,7 +371,28 @@ void PyParty::SetPetBehaviour(int behaviour, int lock_target_id) {
 PetInfo PyParty::GetPetInfo(uint32_t owner) { return PetInfo(owner); }
 bool PyParty::GetIsPlayerTicked(int player_id) { return GW::party::get_is_player_ticked(player_id); }
 void PyParty::UseHeroSkill(uint32_t hero_id, uint32_t skill_slot, uint32_t target_id) {
-    // Delegates to skillbar module for HeroUseSkill logic
+    const uint32_t skill_idx = skill_slot - 1;
+    const uint32_t hero_zero = hero_id - 1;
+    GW::ui::ControlAction hero_action;
+    switch (hero_zero) {
+    case 0: hero_action = GW::ui::ControlAction_Hero1Skill1; break;
+    case 1: hero_action = GW::ui::ControlAction_Hero2Skill1; break;
+    case 2: hero_action = GW::ui::ControlAction_Hero3Skill1; break;
+    case 3: hero_action = GW::ui::ControlAction_Hero4Skill1; break;
+    case 4: hero_action = GW::ui::ControlAction_Hero5Skill1; break;
+    case 5: hero_action = GW::ui::ControlAction_Hero6Skill1; break;
+    case 6: hero_action = GW::ui::ControlAction_Hero7Skill1; break;
+    default: return;
+    }
+    const uint32_t curr_target = GW::agent::GetTargetId();
+    GW::game_thread::Enqueue([target_id, skill_idx, hero_action, curr_target]() {
+        if (target_id && target_id != GW::agent::GetTargetId())
+            GW::agent::ChangeTarget(static_cast<GW::agent::AgentID>(target_id));
+        GW::ui::Keypress(static_cast<GW::ui::ControlAction>(
+            static_cast<uint32_t>(hero_action) + skill_idx));
+        if (curr_target && target_id != curr_target)
+            GW::agent::ChangeTarget(static_cast<GW::agent::AgentID>(curr_target));
+    });
 }
 bool PyParty::SetHeroSkillAIEnabled(uint32_t agent_id, uint32_t slot, bool enabled) {
     return GW::party::set_hero_skill_ai_enabled(agent_id, slot, enabled);
