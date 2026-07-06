@@ -177,19 +177,27 @@ with Python edits + re-inject; "native" = needs C++ binding work + your rebuild.
 | PyItem | NEEDS_NATIVE_BINDING | native+py | DONE-PENDING-BUILD | native: PyItem data class authored in item_bindings.cpp (item_type/dye/rarity/modifiers/async-name/composite-model-ids over GW::Context::Item) - needs rebuild. py: Item.py PyItem.PyItem calls unchanged (surface reproduced); Item.py/ItemArray.py/AccountStruct.py PyInventory.Bag->get_bag dict migrated. |
 | PyEffects | NEEDS_NATIVE_BINDING | native+py | DONE-PENDING-BUILD | native: EffectType/BuffType classes + get_effects/get_buffs added to effects_bindings.cpp (over Context::Effect/Buff) - needs rebuild. py: Effect.py rewritten to free funcs; EffectCache.py DropBuff; Upkeepers.py/upkeepers.py/Yield.py NAME_FIX; BuffStruct.py unchanged (names match). |
 | PyMerchant | NEEDS_NATIVE_BINDING | native+py | PARTIAL | native DONE: 6 getters (is_transaction_complete/get_quoted_item_id/get_quoted_value/get_trader_item_list=GetMerchantItems/get_merchant_item_list=GetMerchantWindowItems/get_trader_item_list2=empty) added over PY4GW::listeners::Merchant() - needs rebuild. py PENDING: MerchantCache.py + Merchant.py facade rewrite (class->free funcs + transact_items arg marshaling per spec; botting_src/helpers_src/Merchant.py indirect, no edit). |
-| PyQuest | NEEDS_NATIVE_BINDING | native | BLOCKED | PyQuest class + 21 methods + QuestData + async cache |
-| PyCamera | NEEDS_NATIVE_BINDING | native | BLOCKED | set_yaw/pitch/pos/look_at + needs Camera field in shared memory + CameraContext reader |
-| PySkillbar | NEEDS_NATIVE_BINDING | native | BLOCKED | GetPlayerSkillbar/GetHeroSkillbar/GetHoveredSkill unbound; HeroUseSkill must be authored |
-| PyParty | API_SHAPE_REWRITE | native+py | PARTIAL-BLOCKED | mostly py free-fn rewrite; UseHeroSkill needs native binding |
-| PyPlayer | RE_HOMED_REPOINT | native+py | PARTIAL-BLOCKED | mostly py repoint; chat-history trio needs native binding |
+| PyQuest | NEEDS_NATIVE_BINDING | native | API-SHAPE | PyQuest binding exists (quest_bindings.cpp); API-SHAPE class->free function conversion needed |
+| PyCamera | NEEDS_NATIVE_BINDING | native | API-SHAPE | Binding exists; Camera field added to shared memory (2026-07-06). API-SHAPE class->free function conversion needed. |
+| PySkillbar | NEEDS_NATIVE_BINDING | native | DONE | Skillbar + SkillbarSkill classes migrated to native pybind (2026-07-04); GetPlayerSkillbar/GetHeroSkillbar/GetHoveredSkill/HeroUseSkill bound. |
+| PyParty | API_SHAPE_REWRITE | native+py | PARTIAL | mostly py free-fn rewrite; UseHeroSkill needs native binding |
+| PyPlayer | RE_HOMED_REPOINT | native+py | PARTIAL | mostly py repoint; chat-history trio needs native binding |
 
-## Shared memory / pointer sourcing (workstream 2 - not started)
+## Shared memory / pointer sourcing (workstream 2 — in progress)
 
-- System A `Pointers_SHMemStruct` (15 context base pointers) is the new pointer
-  source. Open task: confirm layout/field parity byte-for-byte with the C++ writer;
-  confirm every field is populated.
+- System A `Pointers_SHMemStruct` (now 16 context base pointers): Camera field
+  added 2026-07-06. 11/12 legacy PyPointers getters matched; `GetAreaInfoPtr`
+  (standalone dev tool) is the only unmatched legacy pointer.
 - Deviations to resolve: `AgentContext` and `InstanceInfoContext` still use native
   pattern scans instead of shmem.
+- PyPointers module fully RELOCATED to shared memory; no dead import lines remain
+  in context files.
+
+## Registration fixes (2026-07-06)
+
+- PyScanner and PyTrade added to kEmbeddedModules (were compiled but unimportable).
+- Dead code removed from Py4GW core module: `log`, `get_projects_path`, `ImGui` stub
+  (all duplicated in PySystem/PyImGui).
 
 ## Native contexts (workstream 3 - not started)
 

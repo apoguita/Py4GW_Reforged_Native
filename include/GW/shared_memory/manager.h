@@ -95,6 +95,7 @@ struct Pointers_SHMemStruct {
     uintptr_t AvailableCharacters = 0;
     uintptr_t PartyContext = 0;
     uintptr_t ServerRegionContext = 0;
+    uintptr_t Camera = 0;
 };
 #pragma pack(pop)
 

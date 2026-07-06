@@ -270,8 +270,142 @@ std::vector<int32_t> GetQuestLogIds() {
 
 }  // namespace
 
+// ── QuestData struct (parity with legacy py_quest.h QuestData) ──
+struct QuestData {
+    uint32_t quest_id = 0;
+    uint32_t log_state = 0;
+    std::string location;
+    std::string name;
+    std::string npc;
+    uint32_t map_from = 0;
+    float marker_x = 0.0f;
+    float marker_y = 0.0f;
+    uint32_t h0024 = 0;
+    uint32_t map_to = 0;
+    std::string description;
+    std::string objectives;
+    bool is_completed = false;
+    bool is_current_mission_quest = false;
+    bool is_area_primary = false;
+    bool is_primary = false;
+};
+
+// ── PyQuest static class (parity with legacy py_quest.h Quest) ──
+struct PyQuest {
+    static bool SetActiveQuestId(uint32_t quest_id) {
+        return GW::quest::SetActiveQuestId(static_cast<GW::Constants::QuestID>(quest_id));
+    }
+    static uint32_t GetActiveQuestId() {
+        using T = std::underlying_type_t<GW::Constants::QuestID>;
+        return static_cast<uint32_t>(static_cast<T>(GW::Context::GetActiveQuestId()));
+    }
+    static bool AbandonQuestId(uint32_t quest_id) {
+        return GW::quest::AbandonQuestId(static_cast<GW::Constants::QuestID>(quest_id));
+    }
+    static bool IsQuestCompleted(int32_t quest_id) {
+        if (quest_id < 0) return false;
+        auto* q = GW::quest::GetQuest(static_cast<GW::Constants::QuestID>(quest_id));
+        return q && q->IsCompleted();
+    }
+    static bool IsQuestPrimary(int32_t quest_id) {
+        if (quest_id < 0) return false;
+        auto* q = GW::quest::GetQuest(static_cast<GW::Constants::QuestID>(quest_id));
+        return q && q->IsPrimary();
+    }
+    static QuestData GetQuest(int32_t quest_id) {
+        QuestData d;
+        d.quest_id = static_cast<uint32_t>(quest_id);
+        auto* q = GW::quest::GetQuest(static_cast<GW::Constants::QuestID>(quest_id));
+        if (q) {
+            d.log_state = q->log_state;
+            d.map_from = static_cast<uint32_t>(q->map_from);
+            d.map_to = static_cast<uint32_t>(q->map_to);
+            d.marker_x = q->marker.x;
+            d.marker_y = q->marker.y;
+            d.is_completed = q->IsCompleted();
+            d.is_primary = q->IsPrimary();
+        }
+        return d;
+    }
+    static std::vector<int32_t> GetQuestLogIds() {
+        std::vector<int32_t> ids;
+        auto* log = GW::Context::GetQuestLog();
+        if (log) for (auto& q : *log) ids.push_back(static_cast<int32_t>(q.quest_id));
+        return ids;
+    }
+    static std::vector<QuestData> GetQuestLog() {
+        std::vector<QuestData> result;
+        auto* log = GW::Context::GetQuestLog();
+        if (log) for (auto& q : *log) {
+            QuestData d;
+            d.quest_id = static_cast<uint32_t>(q.quest_id);
+            d.log_state = q.log_state;
+            d.map_from = static_cast<uint32_t>(q.map_from);
+            d.map_to = static_cast<uint32_t>(q.map_to);
+            d.marker_x = q.marker.x;
+            d.marker_y = q.marker.y;
+            result.push_back(d);
+        }
+        return result;
+    }
+    static bool RequestQuestInfo(int32_t quest_id, bool update_markers) {
+        return GW::quest::RequestQuestInfoId(static_cast<GW::Constants::QuestID>(quest_id), update_markers);
+    }
+};
+
 PYBIND11_EMBEDDED_MODULE(PyQuest, m) {
     m.doc() = "Py4GW Quest bindings";
+
+    // ── QuestData class ──
+    py::class_<QuestData>(m, "QuestData")
+        .def(py::init<>())
+        .def_readwrite("quest_id", &QuestData::quest_id)
+        .def_readwrite("log_state", &QuestData::log_state)
+        .def_readwrite("location", &QuestData::location)
+        .def_readwrite("name", &QuestData::name)
+        .def_readwrite("npc", &QuestData::npc)
+        .def_readwrite("map_from", &QuestData::map_from)
+        .def_readwrite("marker_x", &QuestData::marker_x)
+        .def_readwrite("marker_y", &QuestData::marker_y)
+        .def_readwrite("h0024", &QuestData::h0024)
+        .def_readwrite("map_to", &QuestData::map_to)
+        .def_readwrite("description", &QuestData::description)
+        .def_readwrite("objectives", &QuestData::objectives)
+        .def_readwrite("is_completed", &QuestData::is_completed)
+        .def_readwrite("is_current_mission_quest", &QuestData::is_current_mission_quest)
+        .def_readwrite("is_area_primary", &QuestData::is_area_primary)
+        .def_readwrite("is_primary", &QuestData::is_primary);
+
+    // ── PyQuest class (legacy static-method surface) ──
+    py::class_<PyQuest>(m, "PyQuest")
+        .def(py::init<>())
+        .def_static("set_active_quest_id", &PyQuest::SetActiveQuestId, py::arg("quest_id"))
+        .def_static("get_active_quest_id", &PyQuest::GetActiveQuestId)
+        .def_static("abandon_quest_id", &PyQuest::AbandonQuestId, py::arg("quest_id"))
+        .def_static("is_quest_completed", &PyQuest::IsQuestCompleted, py::arg("quest_id"))
+        .def_static("is_quest_primary", &PyQuest::IsQuestPrimary, py::arg("quest_id"))
+        .def_static("is_mission_map_quest_available", []() -> bool { return IsMissionMapQuestAvailable(); })
+        .def_static("get_quest_data", &PyQuest::GetQuest, py::arg("quest_id"))
+        .def_static("get_quest_log", &PyQuest::GetQuestLog)
+        .def_static("get_quest_log_ids", &PyQuest::GetQuestLogIds)
+        .def_static("request_quest_info", &PyQuest::RequestQuestInfo, py::arg("quest_id"), py::arg("update_markers") = false)
+        .def_static("request_quest_name", [](int32_t quest_id) { RequestQuestName(quest_id); }, py::arg("quest_id"))
+        .def_static("is_quest_name_ready", [](int32_t quest_id) { return IsAsyncReady(g_quest_name_map, quest_id); }, py::arg("quest_id"))
+        .def_static("get_quest_name", [](int32_t quest_id) { return GetAsyncValue(g_quest_name_map, quest_id); }, py::arg("quest_id"))
+        .def_static("request_quest_description", [](int32_t quest_id) { RequestQuestDescription(quest_id); }, py::arg("quest_id"))
+        .def_static("is_quest_description_ready", [](int32_t quest_id) { return IsAsyncReady(g_quest_description_map, quest_id); }, py::arg("quest_id"))
+        .def_static("get_quest_description", [](int32_t quest_id) { return GetAsyncValue(g_quest_description_map, quest_id); }, py::arg("quest_id"))
+        .def_static("request_quest_objectives", [](int32_t quest_id) { RequestQuestObjectives(quest_id); }, py::arg("quest_id"))
+        .def_static("is_quest_objectives_ready", [](int32_t quest_id) { return IsAsyncReady(g_quest_objectives_map, quest_id); }, py::arg("quest_id"))
+        .def_static("get_quest_objectives", [](int32_t quest_id) { return GetAsyncValue(g_quest_objectives_map, quest_id); }, py::arg("quest_id"))
+        .def_static("request_quest_location", [](int32_t quest_id) { RequestQuestLocation(quest_id); }, py::arg("quest_id"))
+        .def_static("is_quest_location_ready", [](int32_t quest_id) { return IsAsyncReady(g_quest_location_map, quest_id); }, py::arg("quest_id"))
+        .def_static("get_quest_location", [](int32_t quest_id) { return GetAsyncValue(g_quest_location_map, quest_id); }, py::arg("quest_id"))
+        .def_static("request_quest_npc", [](int32_t quest_id) { RequestQuestNPC(quest_id); }, py::arg("quest_id"))
+        .def_static("is_quest_npc_ready", [](int32_t quest_id) { return IsAsyncReady(g_quest_npc_map, quest_id); }, py::arg("quest_id"))
+        .def_static("get_quest_npc", [](int32_t quest_id) { return GetAsyncValue(g_quest_npc_map, quest_id); }, py::arg("quest_id"));
+
+    // ── Free-function surface (also callable directly) ──
 
     m.def("set_active_quest_id", [](uint32_t quest_id) -> bool {
         return GW::quest::SetActiveQuestId(static_cast<GW::Constants::QuestID>(quest_id));

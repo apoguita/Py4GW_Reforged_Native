@@ -286,6 +286,7 @@ bool Manager::UpdatePointersRegion() {
     payload->AvailableCharacters = reinterpret_cast<uintptr_t>(pregame ? pregame->chars_buffer : nullptr);
     payload->PartyContext = reinterpret_cast<uintptr_t>(GW::Context::GetPartyContext());
     payload->ServerRegionContext = GW::map::GetServerRegionPtr();
+    payload->Camera = reinterpret_cast<uintptr_t>(GW::Context::GetCamera());
 
     return true;
 }

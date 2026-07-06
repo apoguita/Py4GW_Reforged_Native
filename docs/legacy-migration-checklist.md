@@ -60,8 +60,7 @@ layer; GWCA manager parity is tracked separately in the parity-report docs).
 - [x] **Host UI** - legacy `Py4GW_UI.cpp` is DEPRECATED; the new
       `src/imgui/{console_host_ui,console_ui,compact_ui,test_ui}.cpp` stack
       replaces it.
-- [~] **PyPointers** (`PyPointers.h`) - will be REWORKED later (superseded
-      natively by `GW::Context::Get*`; no Python module yet).
+- [x] **PyPointers** (`PyPointers.h`) - RELOCATED to shared memory (`Pointers_SHMemStruct`). 11/12 legacy pointer getters matched; `GetAreaInfoPtr` (standalone dev tool) is the only gap. Superseded natively by `GW::Context::Get*`.
 - [x] **PyScanner** (`PyScanner.h`) - MIGRATED 2026-07-03 as a parity port in
       `src/base/scanner_bindings.cpp` over `base/scanner` (decision reversed:
       the legacy Python library's `NativeSymbol`/`NativeFunction` layer and

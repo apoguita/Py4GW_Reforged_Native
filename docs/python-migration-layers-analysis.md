@@ -45,14 +45,16 @@ Python side imports but the native list lacks as "missing"** - in every case so
 far it was renamed, folded into another module, or intentionally retired. Verify
 against the native project (and legacy) before concluding.
 
-### Authoritative native embedded-module list (37)
+### Authoritative native embedded-module list (39)
 
-Py4GW, PyAgent, PyAgentEvents, PyAgentRecolor, PyCallback, PyCamera, PyChat,
-PyDXOverlay, PyDialog, PyEffects, PyFriendList, PyGameThread, PyGuild, PyImGui,
-PyInventory, PyItem, PyKeystroke, PyListeners, PyMap, PyMerchant, PyMouse,
-PyNameObfuscator, PyOverlay, PyPacketSniffer, PyParty, PyPathing, PyPing,
-PyPlayer, PyProfiler, PyQuest, PyRender, PyScanner, PySettings, PySkillbar,
-PySystem, PyTexture, PyTrade, PyUIManager.
+Py4GW, PySystem, PySettings, PyProfiler, PyCallback, PyListeners,
+PyAgent, PyAgentEvents, PyAgentRecolor, PyCamera, PyChat,
+PyDXOverlay, PyDialog, PyEffects, PyFriendList, PyGameThread, PyGuild,
+PyImGui, PyInventory, PyItem, PyKeystroke, PyListeners, PyMap,
+PyMerchant, PyMouse, PyNameObfuscator, PyOverlay, PyPacketSniffer,
+PyParty, PyPathing, PyPing, PyPlayer, PyProfiler, PyQuest, PyRender,
+PyScanner, PySettings, PySkill, PySkillbar, PySystem, PyTexture,
+PyTrade, PyUIManager.
 
 ### Reconciliation of the modules Py4GWCoreLib imports
 
@@ -62,9 +64,9 @@ renamed), RE-HOMED (functionality moved to a differently-named module),
 RETIRED (removed by design).
 
 | Python imports | Native reality | Category | Notes |
-|---|---|---|---|
+|---|---|---|---|---|
 | PyScanner | `scanner_bindings.cpp` (`PyScanner` class) | MATCH | class + static methods preserved |
-| PyImGui | `imgui/imgui_bindings.cpp` | MATCH | both function-based |
+| PyImGui | `imgui/imgui_bindings.cpp` | MATCH | both function-based; ImGui 1.92.x adapted |
 | PyPathing | `pathing_bindings.cpp` (`PathPlanner`, `PathStatus`) | MATCH | classes present |
 | PyUIManager | `ui/ui_bindings.cpp` (`UIManager`, `UIFrame`, ...) | MATCH | present |
 | PyAgent | `agent/agent_bindings.cpp` | API-SHAPE | native = flat `snake_case`; no `PyAgent.PyAgent` class |
@@ -76,14 +78,14 @@ RETIRED (removed by design).
 | PyMerchant | `merchant/merchant_bindings.cpp` | API-SHAPE | no class |
 | PyEffects | `effects/effects_bindings.cpp` | API-SHAPE | no class |
 | PyQuest | `quest/quest_bindings.cpp` | API-SHAPE | no class |
-| PyCamera | `camera/camera_bindings.cpp` | API-SHAPE | no class |
+| PyCamera | `camera/camera_bindings.cpp` | API-SHAPE | no class; Camera field added to shared memory (2026-07-06) |
 | PyKeystroke | `virtual_input/virtual_input_bindings.cpp` | NAME | class is `PyKeyHandler`; Python wants `PyScanCodeKeystroke` |
 | PyOverlay | `overlay/overlay_bindings.cpp` | NAME | `Overlay` OK; `Point2D`/`Point3D` -> `Vec2f`/`Vec3f` (intentional) |
-| PySkill | native skill DATA exists: `GW::Context::Skill` in `include/GW/context/skill.h`; legacy binding was `py_skills.cpp` | RE-HOMED (binding not yet built) | data layer present; `PySkill` binding module not created yet |
-| Py2DRenderer | migrated into `DXOverlay` (`src/overlay/dx_overlay.cpp`), bound as `PyDXOverlay` | RE-HOMED | Python `Py2DRenderer.Py2DRenderer()` demand maps to PyDXOverlay; exact bound surface still to be diffed |
-| PyCombatEvents | migrated + reworked into `listeners/agent_events_listener.h`, bound as `PyAgentEvents` | RE-HOMED | header notes it derives from legacy `CombatEventQueue` (`py_combat_events.h`) |
-| PyPointers | replaced by shared memory (`Pointers_SHMemStruct`) | RETIRED | dead `import PyPointers` lines remain in 13 context files |
-| PyDialogCatalog | folded into `PyDialog` (`read_dialog_*` accessors) | RETIRED | Python import is already guarded try/except |
+| PySkill | native skill DATA exists: `GW::Context::Skill` in `include/GW/context/skill.h`; binding in `skill_bindings.cpp` | MATCH | PySkill embedded module built 2026-07-04 |
+| Py2DRenderer | migrated into `DXOverlay` (`src/overlay/dx_overlay.cpp`), bound as `PyDXOverlay` | RELOCATED | Python `Py2DRenderer.Py2DRenderer()` maps to PyDXOverlay |
+| PyCombatEvents | migrated + reworked into `listeners/agent_events_listener.h`, bound as `PyAgentEvents` | RELOCATED | header notes it derives from legacy `CombatEventQueue` |
+| PyPointers | replaced by shared memory (`Pointers_SHMemStruct`); 11/12 getters matched, 1 gap (AreaInfo) | RELOCATED | dead `import PyPointers` lines removed from contexts |
+| PyDialogCatalog | folded into `PyDialog` (`read_dialog_*` accessors) | RELOCATED | Python import is already guarded try/except |
 
 ### Binding-layer implications
 
@@ -93,12 +95,11 @@ RETIRED (removed by design).
   that the native module no longer exposes. A per-module function-by-function
   signature diff is still required (not done here - agents deliberately stopped at
   module level to avoid a giant speculative diff).
-- RE-HOMED modules need either a new thin binding (`PySkill`) or the Python
-  wrapper re-pointed at the new native module name (`Py2DRenderer` -> PyDXOverlay,
-  `PyCombatEvents` -> PyAgentEvents). Confirm the native bound surface actually
-  covers the Python demand before re-pointing.
-- RETIRED modules: remove dead imports; the data path already moved (PyPointers ->
-  shmem, PyDialogCatalog -> PyDialog).
+- RELOCATED modules: Python wrappers must be re-pointed at the new native
+  module name (`Py2DRenderer` -> PyDXOverlay, `PyCombatEvents` -> PyAgentEvents,
+  `PyPointers` -> shared memory, `PyDialogCatalog` -> PyDialog).
+- PyScanner and PyTrade are registered in kEmbeddedModules (2026-07-06).
+- Camera shared memory field added to Pointers_SHMemStruct (2026-07-06).
 
 ---
 

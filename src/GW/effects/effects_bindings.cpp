@@ -127,4 +127,60 @@ PYBIND11_EMBEDDED_MODULE(PyEffects, m) {
         }
         return out;
     }, py::arg("agent_id"));
+
+    // ── PyEffects class (legacy surface: PyEffects(agent_id).GetEffects() etc.) ──
+    struct PyEffectsWrapper { uint32_t agent_id = 0; };
+    py::class_<PyEffectsWrapper>(m, "PyEffects")
+        .def(py::init<uint32_t>(), py::arg("agent_id"))
+        .def("GetEffects", [](const PyEffectsWrapper& w) {
+            std::vector<PyEffectType> out;
+            auto* effects = GW::effects::GetAgentEffects(w.agent_id);
+            if (!effects || !effects->valid()) return out;
+            for (size_t i = 0; i < effects->size(); ++i) {
+                const auto& e = (*effects)[i];
+                PyEffectType pe; pe.skill_id = static_cast<int>(e.skill_id);
+                pe.attribute_level = e.attribute_level; pe.effect_id = e.effect_id;
+                pe.agent_id = e.agent_id; pe.duration = e.duration;
+                pe.timestamp = e.timestamp; pe.time_elapsed = e.GetTimeElapsed();
+                pe.time_remaining = e.GetTimeRemaining(); out.push_back(pe);
+            }
+            return out;
+        })
+        .def("GetBuffs", [](const PyEffectsWrapper& w) {
+            std::vector<PyBuffType> out;
+            auto* buffs = GW::effects::GetAgentBuffs(w.agent_id);
+            if (!buffs || !buffs->valid()) return out;
+            for (size_t i = 0; i < buffs->size(); ++i) {
+                const auto& b = (*buffs)[i]; PyBuffType pb;
+                pb.skill_id = static_cast<int>(b.skill_id); pb.buff_id = b.buff_id;
+                pb.target_agent_id = b.target_agent_id; out.push_back(pb);
+            }
+            return out;
+        })
+        .def("GetEffectCount", [](const PyEffectsWrapper& w) -> uint32_t {
+            auto* e = GW::effects::GetAgentEffects(w.agent_id);
+            return (e && e->valid()) ? e->size() : 0;
+        })
+        .def("GetBuffCount", [](const PyEffectsWrapper& w) -> uint32_t {
+            auto* b = GW::effects::GetAgentBuffs(w.agent_id);
+            return (b && b->valid()) ? b->size() : 0;
+        })
+        .def("EffectExists", [](const PyEffectsWrapper& w, uint32_t skill_id) -> bool {
+            auto* effects = GW::effects::GetAgentEffects(w.agent_id);
+            if (!effects || !effects->valid()) return false;
+            for (size_t i = 0; i < effects->size(); ++i)
+                if ((*effects)[i].skill_id == static_cast<GW::Constants::SkillID>(skill_id)) return true;
+            return false;
+        }, py::arg("skill_id"))
+        .def("BuffExists", [](const PyEffectsWrapper& w, uint32_t skill_id) -> bool {
+            auto* buffs = GW::effects::GetAgentBuffs(w.agent_id);
+            if (!buffs || !buffs->valid()) return false;
+            for (size_t i = 0; i < buffs->size(); ++i)
+                if ((*buffs)[i].skill_id == static_cast<GW::Constants::SkillID>(skill_id)) return true;
+            return false;
+        }, py::arg("skill_id"))
+        .def("DropBuff", [](const PyEffectsWrapper&, uint32_t buff_id) { GW::effects::DropBuff(buff_id); }, py::arg("skill_id"))
+        .def_static("GetAlcoholLevel", []() -> uint32_t { return GW::effects::GetAlcoholLevel(); })
+        .def_static("ApplyDrunkEffect", [](uint32_t intensity, uint32_t tint) { GW::effects::GetDrunkAf(intensity, tint); },
+             py::arg("intensity") = 0, py::arg("tint") = 0);
 }

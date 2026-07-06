@@ -320,14 +320,6 @@ void ScheduleDeferredAction(std::function<void()> fn, int delay_ms) {
 PYBIND11_EMBEDDED_MODULE(Py4GW, m) {
     m.doc() = "Embedded Py4GW runtime module.";
     m.def("version", []() { return "0.1.0"; });
-    m.def("log", [](const std::string& message) { PY4GW::System::Instance().WriteConsoleMessage("Py4GW", MessageType::Info, message); });
-    m.def("get_projects_path", []() -> std::string {
-        return process_manager::GetModuleDirectory().string();
-    });
-
-    // Py4GW.Console removed: the console is fully consolidated onto PySystem (no
-    // duplicate, no shim). Logging -> PySystem.Console, window control ->
-    // PySystem.window, script control (load/run/stop/defer) -> PySystem.script_control.
 
     py::module_ shared_memory = m.def_submodule("SharedMemory", "Shared memory publisher bindings");
     shared_memory.def("is_ready", []() {
@@ -343,20 +335,6 @@ PYBIND11_EMBEDDED_MODULE(Py4GW, m) {
     shared_memory.def("get_sequence", []() {
         const auto* header = GW::shared_memory::RuntimeManager().Header();
         return header ? header->sequence : 0u;
-    });
-
-    py::module_ imgui = m.def_submodule("ImGui", "Minimal ImGui bindings for script smoke tests");
-    imgui.def("begin", [](const std::string& name) {
-        return ImGui::Begin(name.c_str());
-    });
-    imgui.def("end", []() {
-        ImGui::End();
-    });
-    imgui.def("text", [](const std::string& value) {
-        ImGui::TextUnformatted(value.c_str());
-    });
-    imgui.def("button", [](const std::string& label) {
-        return ImGui::Button(label.c_str());
     });
 }
 
@@ -439,8 +417,10 @@ bool Initialize() {
             "PyPlayer",
             "PyQuest",
             "PyRender",
+            "PyScanner",
             "PySkill",
             "PySkillbar",
+            "PyTrade",
             "PyUIManager",
             "PyTexture",
             "PyDialog",
