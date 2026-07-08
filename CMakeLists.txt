@@ -20,6 +20,7 @@ if(MSVC)
 endif()
 
 option(PY4GW_BUILD_IMGUI_DEMO "Compile Dear ImGui demo sources." ON)
+option(PY4GW_ENABLE_FREETYPE "Rasterize ImGui fonts with the vendored FreeType (sharper than stb_truetype)." ON)
 
 # Keep the injected DLL beside the runtime payload directories so the module can
 # resolve fonts/, scripts/, and offsets/ directly from the repository root.
@@ -37,6 +38,20 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/pybind11)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/minhook)
 
+if(PY4GW_ENABLE_FREETYPE)
+    # Vendored FreeType (third_party/freetype), built lean and fully self-contained:
+    # every optional external (zlib/bzip2/png/harfbuzz/brotli) is disabled so it pulls
+    # in no system library, matching how the rest of third_party/ is vendored. Install
+    # rules are suppressed so it never leaks into a Py4GW install.
+    set(FT_DISABLE_ZLIB     ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_PNG      ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BROTLI   ON CACHE BOOL "" FORCE)
+    set(SKIP_INSTALL_ALL    ON CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/freetype)
+endif()
+
 set(IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_draw.cpp
@@ -48,6 +63,10 @@ set(IMGUI_SOURCES
 
 if(PY4GW_BUILD_IMGUI_DEMO)
     list(APPEND IMGUI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp)
+endif()
+
+if(PY4GW_ENABLE_FREETYPE)
+    list(APPEND IMGUI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/freetype/imgui_freetype.cpp)
 endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCES})
@@ -68,12 +87,23 @@ target_compile_definitions(imgui
 )
 target_link_libraries(imgui PUBLIC d3d9.lib)
 
+if(PY4GW_ENABLE_FREETYPE)
+    # Compile imgui_draw.cpp + imgui_freetype.cpp with IMGUI_ENABLE_FREETYPE so the
+    # atlas auto-installs the FreeType loader (imgui_draw.cpp: SetFontLoader on first
+    # build). PRIVATE is sufficient: no consumer TU references FreeType directly, and
+    # the define does not affect any public ImGui struct layout. freetype's include
+    # dirs arrive transitively via its PUBLIC interface.
+    target_link_libraries(imgui PUBLIC freetype)
+    target_compile_definitions(imgui PRIVATE IMGUI_ENABLE_FREETYPE)
+endif()
+
 file(GLOB_RECURSE PY4GW_IMGUI_ADDON_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/imgui/addons/*.cpp
 )
 
 set(IMGUI_ADDON_SOURCES
     ${PY4GW_IMGUI_ADDON_SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/addons/imgui-filebrowser/ImGuiFileBrowser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/addons/ImAnim/im_anim.cpp
 )
 

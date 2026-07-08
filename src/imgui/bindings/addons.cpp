@@ -5,13 +5,14 @@
 #include "imgui/addons/markdown_demo.h"
 
 #include <imgui.h>
-#include <imfilebrowser.h>
+#include <ImGuiFileBrowser.h>
 #include <imgui_memory_editor.h>
 #include <im_anim.h>
 
 #include <pybind11/stl.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // imgui_markdown.h and imHotKey.h are not included here on purpose: the former
@@ -23,33 +24,33 @@ namespace PY4GW::imgui_bindings {
 namespace {
 
 void register_filebrowser(py::module_& parent) {
-    py::module_ m = parent.def_submodule("filebrowser", "Header-only file picker (imgui-filebrowser).");
+    py::module_ m = parent.def_submodule("filebrowser", "ImGui-Addons file picker.");
 
-    py::enum_<ImGuiFileBrowserFlags_>(m, "Flags")
-        .value("SelectDirectory", ImGuiFileBrowserFlags_SelectDirectory)
-        .value("EnterNewFilename", ImGuiFileBrowserFlags_EnterNewFilename)
-        .value("NoModal", ImGuiFileBrowserFlags_NoModal)
-        .value("NoTitleBar", ImGuiFileBrowserFlags_NoTitleBar)
-        .value("NoStatusBar", ImGuiFileBrowserFlags_NoStatusBar)
-        .value("CloseOnEsc", ImGuiFileBrowserFlags_CloseOnEsc)
-        .value("CreateNewDir", ImGuiFileBrowserFlags_CreateNewDir)
-        .value("MultipleSelection", ImGuiFileBrowserFlags_MultipleSelection)
-        .value("HideRegularFiles", ImGuiFileBrowserFlags_HideRegularFiles)
-        .value("ConfirmOnEnter", ImGuiFileBrowserFlags_ConfirmOnEnter)
-        .value("SkipItemsCausingError", ImGuiFileBrowserFlags_SkipItemsCausingError)
-        .value("EditPathString", ImGuiFileBrowserFlags_EditPathString)
-        .export_values()
-        .def("__or__", [](ImGuiFileBrowserFlags_ a, ImGuiFileBrowserFlags_ b) { return static_cast<ImGuiFileBrowserFlags_>(static_cast<int>(a) | static_cast<int>(b)); });
+    py::enum_<imgui_addons::ImGuiFileBrowser::DialogMode>(m, "DialogMode")
+        .value("SELECT", imgui_addons::ImGuiFileBrowser::DialogMode::SELECT)
+        .value("OPEN", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN)
+        .value("SAVE", imgui_addons::ImGuiFileBrowser::DialogMode::SAVE)
+        .export_values();
 
-    py::class_<ImGui::FileBrowser>(m, "FileBrowser")
-        .def(py::init([](int flags) { return new ImGui::FileBrowser(static_cast<ImGuiFileBrowserFlags>(flags)); }), py::arg("flags") = 0)
-        .def("set_title", [](ImGui::FileBrowser& b, const std::string& t) { b.SetTitle(t); }, py::arg("title"))
-        .def("set_type_filters", [](ImGui::FileBrowser& b, const std::vector<std::string>& f) { b.SetTypeFilters(f); }, py::arg("filters"))
-        .def("open", [](ImGui::FileBrowser& b) { b.Open(); })
-        .def("display", [](ImGui::FileBrowser& b) { b.Display(); })
-        .def("has_selected", [](ImGui::FileBrowser& b) { return b.HasSelected(); })
-        .def("get_selected", [](ImGui::FileBrowser& b) { return b.GetSelected().string(); })
-        .def("clear_selected", [](ImGui::FileBrowser& b) { b.ClearSelected(); });
+    py::class_<imgui_addons::ImGuiFileBrowser>(m, "FileBrowser")
+        .def(py::init<>())
+        .def("show_file_dialog", [](imgui_addons::ImGuiFileBrowser& b,
+                                     const std::string& label,
+                                     imgui_addons::ImGuiFileBrowser::DialogMode mode,
+                                     const std::pair<float, float>& size,
+                                     const std::string& valid_types) {
+                 return b.showFileDialog(label, mode, ImVec2(size.first, size.second), valid_types);
+             },
+             py::arg("label"),
+             py::arg("mode"),
+             py::arg("size") = std::make_pair(0.0f, 0.0f),
+             py::arg("valid_types") = "*.*")
+        .def("set_current_path", &imgui_addons::ImGuiFileBrowser::SetCurrentPath, py::arg("path"))
+        .def("get_current_path", &imgui_addons::ImGuiFileBrowser::GetCurrentPath)
+        .def("set_use_modal", &imgui_addons::ImGuiFileBrowser::SetUseModal, py::arg("modal"))
+        .def_readwrite("selected_fn", &imgui_addons::ImGuiFileBrowser::selected_fn)
+        .def_readwrite("selected_path", &imgui_addons::ImGuiFileBrowser::selected_path)
+        .def_readwrite("ext", &imgui_addons::ImGuiFileBrowser::ext);
 }
 
 void register_hotkey(py::module_& parent) {
@@ -70,8 +71,6 @@ void register_hotkey(py::module_& parent) {
         .def_readwrite("keys", &PyHotKey::keys)
         .def("__repr__", [](const PyHotKey& h) { return "<HotKey '" + h.name + "' keys=" + std::to_string(h.keys) + ">"; });
 
-    // Edit a list of HotKey objects in a modal popup. Mutates each object's
-    // .keys in place. Call ImGui.open_popup(popup_label) to show it.
     m.def("edit", [](py::list hotkeys, const std::string& popup_label) {
               const int count = static_cast<int>(py::len(hotkeys));
               if (count <= 0) return;
@@ -137,7 +136,6 @@ void register_anim(py::module_& parent) {
         .value("Queue", iam_policy_queue)
         .export_values();
 
-    // Call once at the top of draw() before any tweens.
     m.def("update_begin_frame", []() { iam_update_begin_frame(); });
     m.def("gc", [](unsigned int max_age_frames) { iam_gc(max_age_frames); }, py::arg("max_age_frames") = 600);
     m.def("set_global_time_scale", [](float s) { iam_set_global_time_scale(s); }, py::arg("scale"));

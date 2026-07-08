@@ -90,6 +90,13 @@ void register_style(py::module_& m) {
     // field writes take effect immediately.
     py::class_<ImGuiStyle>(m, "ImGuiStyle")
         .def_readwrite("Alpha", &ImGuiStyle::Alpha).def_readwrite("DisabledAlpha", &ImGuiStyle::DisabledAlpha)
+        // ImGui 1.92 font scaling: FontSizeBase is the unscaled base size (feed to
+        // PushFont(NULL, size)); FontScaleMain is the app/user global scale (the
+        // replacement for io.FontGlobalScale); FontScaleDpi is the monitor-DPI
+        // factor. Final size == FontSizeBase * FontScaleMain * FontScaleDpi.
+        .def_readwrite("FontSizeBase", &ImGuiStyle::FontSizeBase)
+        .def_readwrite("FontScaleMain", &ImGuiStyle::FontScaleMain)
+        .def_readwrite("FontScaleDpi", &ImGuiStyle::FontScaleDpi)
         .def_readwrite("WindowPadding", &ImGuiStyle::WindowPadding).def_readwrite("WindowRounding", &ImGuiStyle::WindowRounding)
         .def_readwrite("WindowBorderSize", &ImGuiStyle::WindowBorderSize).def_readwrite("WindowMinSize", &ImGuiStyle::WindowMinSize)
         .def_readwrite("WindowTitleAlign", &ImGuiStyle::WindowTitleAlign).def_readwrite("WindowMenuButtonPosition", &ImGuiStyle::WindowMenuButtonPosition)

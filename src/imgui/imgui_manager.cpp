@@ -34,6 +34,8 @@ WNDPROC g_original_wndproc = nullptr;
 PY4GW::imgui::ShutdownCallback g_shutdown_callback = nullptr;
 bool g_account_ini_applied = false;
 std::string g_account_ini_path;
+constexpr float kDefaultWindowRounding = 5.0f;
+constexpr float kDefaultWindowBgAlpha = 0.80f;
 
 // Ini persistence stays disabled until the account anchor is resolved; then
 // ImGui reads/writes its layout under <dll_dir>/settings/<email>/imgui.ini.
@@ -70,7 +72,7 @@ void ApplyImGuiTheme() {
     ImGuiStyle& style = ImGui::GetStyle();
 
     style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.WindowRounding = 5.0f;
+    style.WindowRounding = kDefaultWindowRounding;
     style.FramePadding = ImVec2(5.0f, 5.0f);
     style.FrameRounding = 4.0f;
     style.ItemSpacing = ImVec2(10.0f, 6.0f);
@@ -83,7 +85,7 @@ void ApplyImGuiTheme() {
 
     style.Colors[ImGuiCol_Text] = ImVec4(0.80f, 0.80f, 0.80f, 1.00f);
     style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.01f, 0.01f, 0.01f, 0.80f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.01f, 0.01f, 0.01f, kDefaultWindowBgAlpha);
     style.Colors[ImGuiCol_Tab] = ImVec4(0.10f, 0.15f, 0.20f, 1.00f);
     style.Colors[ImGuiCol_TabHovered] = ImVec4(0.20f, 0.30f, 0.40f, 1.00f);
     style.Colors[ImGuiCol_TabActive] = ImVec4(0.40f, 0.50f, 0.60f, 1.00f);
@@ -118,6 +120,13 @@ void ApplyImGuiTheme() {
     style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.40f, 0.39f, 0.38f, 0.63f);
     style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(0.25f, 1.00f, 0.00f, 1.00f);
     style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.10f, 1.00f, 0.10f, 0.43f);
+}
+
+void ApplyViewportStyleTweaks() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    const bool enabled = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+    style.WindowRounding = enabled ? 0.0f : kDefaultWindowRounding;
+    style.Colors[ImGuiCol_WindowBg].w = enabled ? 1.0f : kDefaultWindowBgAlpha;
 }
 
 bool RenderConsoleUiSafely(bool* request_shutdown) noexcept {
@@ -335,6 +344,7 @@ bool Initialize(IDirect3DDevice9* device) {
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.ConfigFlags |= ImGuiConfigFlags_NavNoCaptureKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    ApplyViewportStyleTweaks();
 
     if (!console_host_ui::Initialize()) {
         ImGui::DestroyContext();
@@ -416,6 +426,10 @@ void EndFrame(IDirect3DDevice9* device) {
     ImGui::EndFrame();
     ImGui::Render();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    if ((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 
     device->SetRenderState(D3DRS_ZENABLE, TRUE);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
@@ -430,6 +444,55 @@ void InvalidateDeviceObjects() {
 
 void SetShutdownCallback(ShutdownCallback callback) {
     g_shutdown_callback = callback;
+}
+
+bool IsDockingEnabled() {
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return false;
+    }
+    return (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable) != 0;
+}
+
+void SetDockingEnabled(bool enabled) {
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    if (enabled) {
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    } else {
+        io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
+    }
+}
+
+bool IsMultiViewportEnabled() {
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return false;
+    }
+    return (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+}
+
+void SetMultiViewportEnabled(bool enabled) {
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    if (enabled) {
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    } else {
+        io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    }
+    ApplyViewportStyleTweaks();
+}
+
+bool HasMultiViewportSupport() {
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return false;
+    }
+    const ImGuiBackendFlags flags = ImGui::GetIO().BackendFlags;
+    const ImGuiBackendFlags required =
+        static_cast<ImGuiBackendFlags>(ImGuiBackendFlags_PlatformHasViewports | ImGuiBackendFlags_RendererHasViewports);
+    return (flags & required) == required;
 }
 
 }  // namespace PY4GW::imgui

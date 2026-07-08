@@ -10,9 +10,10 @@
 #include "system/system.h"
 
 #include <imgui.h>
-#include <imfilebrowser.h>
+#include <ImGuiFileBrowser.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -21,6 +22,9 @@
 namespace PY4GW::imgui::console_ui {
 
 namespace {
+
+constexpr char kScriptBrowserPopup[] = "Select Python Script";
+constexpr ImVec2 kScriptBrowserSize = ImVec2(700.0f, 450.0f);
 
 ImGuiTextFilter g_log_filter;
 std::vector<std::string> g_command_history;
@@ -33,6 +37,11 @@ bool g_auto_scroll_loaded = false;
 ImVec2 console_pos = ImVec2(5, 30);
 ImVec2 console_size = ImVec2(800, 700);
 bool console_collapsed = false;
+
+struct ScriptBrowserState {
+    imgui_addons::ImGuiFileBrowser browser;
+    bool open_requested = false;
+};
 
 void ShowTooltipInternal(const char* tooltip_text) {
     if (ImGui::IsItemHovered()) {
@@ -71,46 +80,49 @@ int TextEditCallback(ImGuiInputTextCallbackData* data) {
 ImVec4 MessageTypeColor(MessageType message_type) {
     switch (message_type) {
     case MessageType::Error:
-        return {1.0f, 0.0f, 0.0f, 1.0f};// Red for errors
+        return {1.0f, 0.0f, 0.0f, 1.0f};
     case MessageType::Warning:
-        return {1.0f, 1.0f, 0.0f, 1.0f};// Yellow for warnings
+        return {1.0f, 1.0f, 0.0f, 1.0f};
     case MessageType::Success:
-        return {0.0f, 1.0f, 0.0f, 1.0f};// Green for success
+        return {0.0f, 1.0f, 0.0f, 1.0f};
     case MessageType::Debug:
     case MessageType::Hook:
-        return {0.0f, 1.0f, 1.0f, 1.0f};// Cyan for debug / hook
-    case MessageType::Performance: 
-        return {1.0f, 0.6f, 0.0f, 1.0f};// Orange for performance
+        return {0.0f, 1.0f, 1.0f, 1.0f};
+    case MessageType::Performance:
+        return {1.0f, 0.6f, 0.0f, 1.0f};
     case MessageType::Notice:
-        return {0.6f, 1.0f, 0.6f, 1.0f};// Light green for notices
+        return {0.6f, 1.0f, 0.6f, 1.0f};
     case MessageType::Info:
     default:
-        return {1.0f, 1.0f, 1.0f, 1.0f};// White for info
+        return {1.0f, 1.0f, 1.0f, 1.0f};
     }
 }
 
-ImGui::FileBrowser& ScriptBrowser() {
-    static std::unique_ptr<ImGui::FileBrowser> browser;
-    if (!browser) {
+ScriptBrowserState& ScriptBrowser() {
+    static std::unique_ptr<ScriptBrowserState> state;
+    if (!state) {
         const auto root = process_manager::GetModuleDirectory();
-        browser = std::make_unique<ImGui::FileBrowser>(
-            ImGuiFileBrowserFlags_NoModal |
-                ImGuiFileBrowserFlags_CreateNewDir |
-                ImGuiFileBrowserFlags_SkipItemsCausingError,
-            root.empty() ? std::filesystem::path(L"C:\\") : root);
-        browser->SetTitle("Select Python Script");
-        browser->SetTypeFilters({".py"});
+        state = std::make_unique<ScriptBrowserState>();
+        state->browser.SetUseModal(true);
+        state->browser.SetCurrentPath((root.empty() ? std::filesystem::path(L"C:\\") : root).string());
     }
-    return *browser;
+    return *state;
+}
+
+void RequestOpenScriptBrowser() {
+    ScriptBrowser().open_requested = true;
 }
 
 void RenderScriptBrowser() {
-    auto& browser = ScriptBrowser();
-    browser.Display();
-    if (browser.HasSelected()) {
-        python_runtime::SetSelectedScriptPath(browser.GetSelected().string());
+    auto& state = ScriptBrowser();
+    if (state.open_requested) {
+        ImGui::OpenPopup(kScriptBrowserPopup);
+        state.open_requested = false;
+    }
+
+    if (state.browser.showFileDialog(kScriptBrowserPopup, imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, kScriptBrowserSize, ".py")) {
+        python_runtime::SetSelectedScriptPath(state.browser.selected_path);
         System::Instance().WriteConsoleMessage("Py4GW", MessageType::Info, "Selected script: " + python_runtime::GetSelectedScriptPath());
-        browser.ClearSelected();
     }
 }
 
@@ -151,8 +163,6 @@ void RenderControls(bool* show_console, bool* show_compact_console) {
 
     if (ImGui::BeginTable("ScriptOptionsTable", 4, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableNextRow();
-
-        // Script Path Input (disable if script is running)
         ImGui::TableSetColumnIndex(0);
         ImGui::SetNextItemWidth(-FLT_MIN);
 
@@ -167,20 +177,18 @@ void RenderControls(bool* show_console, bool* show_compact_console) {
             ImGui::EndDisabled();
         }
 
-        // Browse Button (disable if script is running)
         ImGui::TableSetColumnIndex(1);
         if (python_runtime::GetScriptState() == python_runtime::ScriptState::Running) {
             ImGui::BeginDisabled();
         }
         if (ImGui::Button(ICON_FA_FOLDER_OPEN "##Open")) {
-            ScriptBrowser().Open();
+            RequestOpenScriptBrowser();
         }
         if (python_runtime::GetScriptState() == python_runtime::ScriptState::Running) {
             ImGui::EndDisabled();
         }
         ShowTooltipInternal("Select a Python script");
 
-        // Control Buttons (Load, Run, Pause, Stop)
         ImGui::TableSetColumnIndex(2);
         if (g_path_buffer[0] != '\0') {
             const auto state = python_runtime::GetScriptState();
@@ -218,21 +226,18 @@ void RenderLog(bool* show_console, bool* show_compact_console) {
     if (ImGui::BeginTable("ConsoleControlsTable", 6, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableNextRow();
 
-        // Clear Console Button
         ImGui::TableSetColumnIndex(0);
         if (ImGui::Button("Clear")) {
             System::Instance().ClearConsoleMessages();
         }
         ShowTooltipInternal("Clear the console output");
 
-        // Save Log Button
         ImGui::TableSetColumnIndex(1);
         if (ImGui::Button("Save Log")) {
             SaveLogToFile();
         }
         ShowTooltipInternal("Save console output to file");
 
-        // Copy All Button
         ImGui::TableSetColumnIndex(2);
         if (ImGui::Button("Copy All")) {
             CopyLogToClipboard();
@@ -275,8 +280,6 @@ void RenderLog(bool* show_console, bool* show_compact_console) {
     }
 
     ImGui::Separator();
-
-    // Main console area with adjusted size for the status bar
     ImGui::BeginChild("ConsoleArea", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() * 2.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
 
     if (ImGui::BeginPopupContextWindow()) {
@@ -286,19 +289,18 @@ void RenderLog(bool* show_console, bool* show_compact_console) {
         ImGui::EndPopup();
     }
 
-    // Display each log entry with different colors
     for (const auto& entry : entries) {
         const std::string full_message = "[" + entry.display_timestamp + "] [" + entry.module_name + "] " + entry.message;
         if (!g_log_filter.PassFilter(full_message.c_str())) {
             continue;
         }
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));// Gray for timestamp
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
         ImGui::Text("[%s]", entry.display_timestamp.c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine();
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.75f, 1.0f, 1.0f)); // Light blue for module name
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.75f, 1.0f, 1.0f));
         ImGui::Text("[%s]", entry.module_name.c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine();
@@ -337,24 +339,18 @@ void RenderCommandInput() {
 }  // namespace
 
 void RenderFullConsole(bool* show_console, bool* show_compact_console) {
-    // FirstUseEver: only seed defaults when the window has no saved ini entry,
-    // so per-account saved settings restore even though this window is created
-    // after the account ini is loaded.
     ImGui::SetNextWindowPos(console_pos, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(console_size, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowCollapsed(console_collapsed, ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Py4GW Console###Py4GWFullConsole", show_console)) {
         ImGui::End();
-        //RenderScriptBrowser();
         return;
     }
 
     RenderControls(show_console, show_compact_console);
     RenderLog(show_console, show_compact_console);
-    //RenderCommandInput();
 
-    // Get current time from the custom timer
     const auto state = python_runtime::GetScriptState();
     const double elapsed_time_ms = python_runtime::GetScriptElapsedMilliseconds();
     const int minutes = static_cast<int>(elapsed_time_ms) / 60000;

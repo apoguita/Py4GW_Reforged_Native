@@ -19,5 +19,10 @@ bool RenderConsoleUi(bool* request_shutdown);
 void EndFrame(IDirect3DDevice9* device);
 void InvalidateDeviceObjects();
 void SetShutdownCallback(ShutdownCallback callback);
+bool IsDockingEnabled();
+void SetDockingEnabled(bool enabled);
+bool IsMultiViewportEnabled();
+void SetMultiViewportEnabled(bool enabled);
+bool HasMultiViewportSupport();
 
 }  // namespace PY4GW::imgui

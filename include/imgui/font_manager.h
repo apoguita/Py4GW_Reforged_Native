@@ -55,6 +55,11 @@ public:
     // Dynamic style font backing this id (Regular/Bold/Italic/BoldItalic). Render
     // it at GetSize(id) via ImGui::PushFont(font, size).
     ImFont* Get(FontId id);
+    // Dynamic style font by style index (0=Regular,1=Bold,2=Italic,3=BoldItalic),
+    // for rendering that style at an arbitrary pixel size under the 1.92 model:
+    // ImGui::PushFont(GetStyleFont(style), size). Falls back to the default font
+    // for an out-of-range style.
+    ImFont* GetStyleFont(int style);
     // Designed pixel size for this id (14/22/30/46/62/124).
     float GetSize(FontId id) const;
     ImFont* GetDefaultFont() const;

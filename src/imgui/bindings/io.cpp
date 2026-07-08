@@ -50,6 +50,7 @@ void register_io(py::module_& m) {
         .def_property_readonly("want_text_input", [](IOHandle&) { return LiveIO().WantTextInput; })
         .def_property_readonly("want_set_mouse_pos", [](IOHandle&) { return LiveIO().WantSetMousePos; })
         .def_property_readonly("want_save_ini_settings", [](IOHandle&) { return LiveIO().WantSaveIniSettings; })
+        .def_property_readonly("backend_flags", [](IOHandle&) { return static_cast<int>(LiveIO().BackendFlags); })
         .def_property_readonly("metrics_render_vertices", [](IOHandle&) { return LiveIO().MetricsRenderVertices; })
         .def_property_readonly("metrics_render_indices", [](IOHandle&) { return LiveIO().MetricsRenderIndices; })
         .def_property_readonly("metrics_active_windows", [](IOHandle&) { return LiveIO().MetricsActiveWindows; })
@@ -88,6 +89,15 @@ void register_io(py::module_& m) {
         .def_property("config_input_text_cursor_blink",
              [](IOHandle&) { return LiveIO().ConfigInputTextCursorBlink; },
              [](IOHandle&, bool v) { LiveIO().ConfigInputTextCursorBlink = v; })
+        // ImGui 1.92 DPI font scaling: when enabled, the docking backend keeps
+        // style.FontScaleDpi in sync with the monitor DPI so fonts stay crisp
+        // across monitors. Viewports variant additionally scales window sizes.
+        .def_property("config_dpi_scale_fonts",
+             [](IOHandle&) { return LiveIO().ConfigDpiScaleFonts; },
+             [](IOHandle&, bool v) { LiveIO().ConfigDpiScaleFonts = v; })
+        .def_property("config_dpi_scale_viewports",
+             [](IOHandle&) { return LiveIO().ConfigDpiScaleViewports; },
+             [](IOHandle&, bool v) { LiveIO().ConfigDpiScaleViewports = v; })
 
         // ── config flag helpers ──
         .def("add_config_flag", [](IOHandle&, int f) {
@@ -98,6 +108,9 @@ void register_io(py::module_& m) {
              }, py::arg("flag"))
         .def("has_config_flag", [](IOHandle&, int f) {
                  return (LiveIO().ConfigFlags & static_cast<ImGuiConfigFlags>(f)) != 0;
+             }, py::arg("flag"))
+        .def("has_backend_flag", [](IOHandle&, int f) {
+                 return (LiveIO().BackendFlags & static_cast<ImGuiBackendFlags>(f)) != 0;
              }, py::arg("flag"));
 
     m.def("get_io", []() { return IOHandle{}; },

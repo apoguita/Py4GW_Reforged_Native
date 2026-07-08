@@ -9,9 +9,10 @@
 #include "system/system.h"
 
 #include <imgui.h>
-#include <imfilebrowser.h>
+#include <ImGuiFileBrowser.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 
@@ -19,10 +20,17 @@ namespace PY4GW::imgui::compact_ui {
 
 namespace {
 
+constexpr char kScriptBrowserPopup[] = "Select Python Script";
+constexpr ImVec2 kScriptBrowserSize = ImVec2(700.0f, 450.0f);
+
 char g_path_buffer[512] = {};
 ImVec2 compact_console_pos = ImVec2(5, 30);
 bool compact_console_collapsed = false;
 
+struct ScriptBrowserState {
+    imgui_addons::ImGuiFileBrowser browser;
+    bool open_requested = false;
+};
 
 void ShowTooltipInternal(const char* tooltip_text) {
     if (ImGui::IsItemHovered()) {
@@ -32,28 +40,31 @@ void ShowTooltipInternal(const char* tooltip_text) {
     }
 }
 
-ImGui::FileBrowser& ScriptBrowser() {
-    static std::unique_ptr<ImGui::FileBrowser> browser;
-    if (!browser) {
+ScriptBrowserState& ScriptBrowser() {
+    static std::unique_ptr<ScriptBrowserState> state;
+    if (!state) {
         const auto root = process_manager::GetModuleDirectory();
-        browser = std::make_unique<ImGui::FileBrowser>(
-            ImGuiFileBrowserFlags_NoModal |
-            ImGuiFileBrowserFlags_CreateNewDir |
-            ImGuiFileBrowserFlags_SkipItemsCausingError,
-            root.empty() ? std::filesystem::path(L"C:\\") : root);
-        browser->SetTitle("Select Python Script");
-        browser->SetTypeFilters({ ".py" });
+        state = std::make_unique<ScriptBrowserState>();
+        state->browser.SetUseModal(true);
+        state->browser.SetCurrentPath((root.empty() ? std::filesystem::path(L"C:\\") : root).string());
     }
-    return *browser;
+    return *state;
+}
+
+void RequestOpenScriptBrowser() {
+    ScriptBrowser().open_requested = true;
 }
 
 void RenderScriptBrowser() {
-    auto& browser = ScriptBrowser();
-    browser.Display();
-    if (browser.HasSelected()) {
-        python_runtime::SetSelectedScriptPath(browser.GetSelected().string());
+    auto& state = ScriptBrowser();
+    if (state.open_requested) {
+        ImGui::OpenPopup(kScriptBrowserPopup);
+        state.open_requested = false;
+    }
+
+    if (state.browser.showFileDialog(kScriptBrowserPopup, imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, kScriptBrowserSize, ".py")) {
+        python_runtime::SetSelectedScriptPath(state.browser.selected_path);
         System::Instance().WriteConsoleMessage("Py4GW", MessageType::Info, "Selected script: " + python_runtime::GetSelectedScriptPath());
-        browser.ClearSelected();
     }
 }
 
@@ -65,14 +76,12 @@ void SyncPathBuffer() {
 }  // namespace
 
 void RenderCompactConsole(bool* show_console, bool* show_compact_console) {
-    // FirstUseEver: only seed defaults when the window has no saved ini entry.
     ImGui::SetNextWindowPos(compact_console_pos, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowCollapsed(compact_console_collapsed, ImGuiCond_FirstUseEver);
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_AlwaysAutoResize;
     if (!ImGui::Begin("Py4GW###Py4GWCompactConsole", show_compact_console, flags)) {
         ImGui::End();
-        //RenderScriptBrowser();
         return;
     }
 
@@ -83,7 +92,6 @@ void RenderCompactConsole(bool* show_console, bool* show_compact_console) {
         ImGui::TableSetupColumn("ButtonColumn");
         ImGui::TableNextRow();
 
-        // First Column: Script Path Input
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(70.0f);
         if (ImGui::InputText("##compact_script_path", g_path_buffer, IM_ARRAYSIZE(g_path_buffer))) {
@@ -93,10 +101,9 @@ void RenderCompactConsole(bool* show_console, bool* show_compact_console) {
             ShowTooltipInternal(g_path_buffer);
         }
 
-        // Second Column: Browse Button
         ImGui::TableNextColumn();
         if (ImGui::Button(ICON_FA_FOLDER_OPEN "##Open", ImVec2(30, 30))) {
-            ScriptBrowser().Open();
+            RequestOpenScriptBrowser();
         }
         ShowTooltipInternal("Open Python script");
         ImGui::EndTable();

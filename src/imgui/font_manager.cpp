@@ -98,6 +98,17 @@ ImFont* FontManager::Get(FontId id) {
     return font ? font : default_font_;
 }
 
+ImFont* FontManager::GetStyleFont(int style) {
+    if (!initialized_ && !Initialize()) {
+        return default_font_;
+    }
+    if (style < 0 || style >= 4) {
+        return default_font_;
+    }
+    ImFont* font = style_fonts_[style];
+    return font ? font : default_font_;
+}
+
 float FontManager::GetSize(FontId id) const {
     return SizeOf(id);
 }
@@ -116,8 +127,10 @@ ImFont* FontManager::LoadStyleFont(int style) {
 
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig config;
-    config.OversampleH = 1;
-    config.OversampleV = 1;
+    // Leave OversampleH/V at their default (0 == automatic). ImGui 1.92 sizes
+    // fonts dynamically and picks oversampling per baked size; forcing 1 disables
+    // oversampling and blurs small text while wasting atlas space at large sizes
+    // (CHANGELOG 1.92: "quite important you keep it automatic").
     config.PixelSnapH = true;
 
     ImFont* loaded = io.Fonts->AddFontFromFileTTF(path.c_str(), kDesignSize, &config);
@@ -132,9 +145,9 @@ ImFont* FontManager::LoadStyleFont(int style) {
 }
 
 bool FontManager::MergeFontAwesomeIntoLast(float size) {
-    const std::string regular_path = BuildFontPath("Font Awesome 6 Free-Regular-400.otf");
     const std::string solid_path = BuildFontPath("Font Awesome 6 Free-Solid-900.otf");
-    if (regular_path.empty() || solid_path.empty()) {
+    const std::string regular_path = BuildFontPath("Font Awesome 6 Free-Regular-400.otf");
+    if (solid_path.empty() || regular_path.empty()) {
         return false;
     }
 
@@ -148,13 +161,17 @@ bool FontManager::MergeFontAwesomeIntoLast(float size) {
 
     static const ImWchar icon_ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
 
+    // Merge Solid BEFORE Regular. ImGui 1.92 resolves a glyph from the FIRST
+    // merged source that contains it, so the full ~1400-glyph Solid set must come
+    // first; otherwise the ~163 codepoints shared with Regular would render as the
+    // thin Regular outline instead of the expected Solid glyph (CHANGELOG 1.92).
     bool ok = true;
-    if (!io.Fonts->AddFontFromFileTTF(regular_path.c_str(), size, &config, icon_ranges)) {
-        Logger::Instance().LogError("Failed to load Font Awesome regular font.");
-        ok = false;
-    }
     if (!io.Fonts->AddFontFromFileTTF(solid_path.c_str(), size, &config, icon_ranges)) {
         Logger::Instance().LogError("Failed to load Font Awesome solid font.");
+        ok = false;
+    }
+    if (!io.Fonts->AddFontFromFileTTF(regular_path.c_str(), size, &config, icon_ranges)) {
+        Logger::Instance().LogError("Failed to load Font Awesome regular font.");
         ok = false;
     }
     return ok;

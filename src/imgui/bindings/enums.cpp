@@ -24,6 +24,31 @@ void register_enums(py::module_& m) {
         .value("Descending", ImGuiSortDirection_Descending)
         .export_values();
 
+    BIND_FLAGS_ENUM("ConfigFlags", ImGuiConfigFlags_)
+        .value("NoFlag", ImGuiConfigFlags_None)
+        .value("NavEnableKeyboard", ImGuiConfigFlags_NavEnableKeyboard)
+        .value("NavEnableGamepad", ImGuiConfigFlags_NavEnableGamepad)
+        .value("NoMouse", ImGuiConfigFlags_NoMouse)
+        .value("NoMouseCursorChange", ImGuiConfigFlags_NoMouseCursorChange)
+        .value("NoKeyboard", ImGuiConfigFlags_NoKeyboard)
+        .value("DockingEnable", ImGuiConfigFlags_DockingEnable)
+        .value("ViewportsEnable", ImGuiConfigFlags_ViewportsEnable)
+        .value("DpiEnableScaleViewports", ImGuiConfigFlags_DpiEnableScaleViewports)
+        .value("DpiEnableScaleFonts", ImGuiConfigFlags_DpiEnableScaleFonts)
+        .value("NavNoCaptureKeyboard", ImGuiConfigFlags_NavNoCaptureKeyboard)
+    BIND_FLAGS_END(ImGuiConfigFlags_);
+
+    BIND_FLAGS_ENUM("BackendFlags", ImGuiBackendFlags_)
+        .value("NoFlag", ImGuiBackendFlags_None)
+        .value("HasGamepad", ImGuiBackendFlags_HasGamepad)
+        .value("HasMouseCursors", ImGuiBackendFlags_HasMouseCursors)
+        .value("HasSetMousePos", ImGuiBackendFlags_HasSetMousePos)
+        .value("RendererHasVtxOffset", ImGuiBackendFlags_RendererHasVtxOffset)
+        .value("PlatformHasViewports", ImGuiBackendFlags_PlatformHasViewports)
+        .value("HasMouseHoveredViewport", ImGuiBackendFlags_HasMouseHoveredViewport)
+        .value("RendererHasViewports", ImGuiBackendFlags_RendererHasViewports)
+    BIND_FLAGS_END(ImGuiBackendFlags_);
+
     BIND_FLAGS_ENUM("WindowFlags", ImGuiWindowFlags_)
         .value("NoFlag", ImGuiWindowFlags_None).value("NoTitleBar", ImGuiWindowFlags_NoTitleBar)
         .value("NoResize", ImGuiWindowFlags_NoResize).value("NoMove", ImGuiWindowFlags_NoMove)

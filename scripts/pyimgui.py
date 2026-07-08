@@ -105,6 +105,8 @@ __all__ = [
     "item_width",
     "text_wrap_pos",
     "font",
+    "style_font",
+    "font_size",
     "clip_rect",
 ]
 
@@ -514,6 +516,17 @@ def text_wrap_pos(wrap_local_pos_x: float = 0.0):
 
 def font(font_index: int = 0):
     return _PushPopScope(lambda: _raw.push_font(font_index), _raw.pop_font)
+
+
+def style_font(style: int, size: float = 0.0):
+    """Render a style (0=Regular,1=Bold,2=Italic,3=BoldItalic) at any pixel size
+    under the ImGui 1.92 dynamic-font model. size <= 0 keeps the current size."""
+    return _PushPopScope(lambda: _raw.push_style_font(style, size), _raw.pop_font)
+
+
+def font_size(size: float):
+    """Re-scale the current font to an absolute base size (before global factors)."""
+    return _PushPopScope(lambda: _raw.push_font_size(size), _raw.pop_font)
 
 
 def clip_rect(x: float, y: float, width: float, height: float, intersect: bool = True):

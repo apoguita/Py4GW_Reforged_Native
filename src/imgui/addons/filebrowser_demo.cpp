@@ -2,10 +2,8 @@
 
 #include "imgui/addons/filebrowser_demo.h"
 
-#include <windows.h>
-
 #include <imgui.h>
-#include <imfilebrowser.h>
+#include <ImGuiFileBrowser.h>
 
 #include <cstring>
 #include <filesystem>
@@ -15,14 +13,22 @@ namespace PY4GW::imgui::addons::filebrowser_demo {
 
 namespace {
 
+constexpr char kDemoBrowserPopup[] = "Addon File Browser";
+constexpr ImVec2 kDemoBrowserSize = ImVec2(700.0f, 450.0f);
+
 std::filesystem::path GetSafeInitialDirectory() {
     return std::filesystem::path(L"C:\\");
 }
 
+struct DemoBrowserState {
+    imgui_addons::ImGuiFileBrowser browser;
+    bool open_requested = false;
+};
+
 }  // namespace
 
 void Render() {
-    static std::unique_ptr<ImGui::FileBrowser> browser;
+    static std::unique_ptr<DemoBrowserState> browser;
     static bool init_attempted = false;
     static bool init_failed = false;
     static char selected_path[512] = "No file selected";
@@ -31,13 +37,9 @@ void Render() {
     if (!init_attempted) {
         init_attempted = true;
         try {
-            browser = std::make_unique<ImGui::FileBrowser>(
-                ImGuiFileBrowserFlags_NoModal |
-                ImGuiFileBrowserFlags_CreateNewDir |
-                ImGuiFileBrowserFlags_SkipItemsCausingError,
-                GetSafeInitialDirectory());
-            browser->SetTitle("Addon File Browser");
-            browser->SetTypeFilters({".txt", ".json", ".py", ".dll"});
+            browser = std::make_unique<DemoBrowserState>();
+            browser->browser.SetUseModal(false);
+            browser->browser.SetCurrentPath(GetSafeInitialDirectory().string());
         } catch (const std::exception& error) {
             init_failed = true;
             strncpy_s(error_text, sizeof(error_text), error.what(), _TRUNCATE);
@@ -47,18 +49,24 @@ void Render() {
         }
     }
 
-    ImGui::TextWrapped("Header-only file picker. This wrapper tracks configuration and selection state.");
+    ImGui::TextWrapped("Direct ImGui-Addons file picker. Open the popup and use showFileDialog() each frame.");
     if (init_failed || !browser) {
         ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "File browser init failed: %s", error_text);
         return;
     }
 
     if (ImGui::Button("Open File Browser")) {
-        browser->Open();
+        browser->open_requested = true;
     }
 
     try {
-        browser->Display();
+        if (browser->open_requested) {
+            ImGui::OpenPopup(kDemoBrowserPopup);
+            browser->open_requested = false;
+        }
+        if (browser->browser.showFileDialog(kDemoBrowserPopup, imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, kDemoBrowserSize, ".txt,.json,.py,.dll")) {
+            strncpy_s(selected_path, sizeof(selected_path), browser->browser.selected_path.c_str(), _TRUNCATE);
+        }
     } catch (const std::exception& error) {
         strncpy_s(error_text, sizeof(error_text), error.what(), _TRUNCATE);
         init_failed = true;
@@ -72,12 +80,6 @@ void Render() {
     if (init_failed || !browser) {
         ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "File browser runtime failed: %s", error_text);
         return;
-    }
-
-    if (browser->HasSelected()) {
-        const auto selected = browser->GetSelected().string();
-        strncpy_s(selected_path, sizeof(selected_path), selected.c_str(), _TRUNCATE);
-        browser->ClearSelected();
     }
 
     ImGui::Separator();

@@ -6,6 +6,7 @@
 
 #include "imgui/bindings.h"
 #include "imgui/font_manager.h"
+#include "imgui/imgui_manager.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,27 @@ namespace py = pybind11;
 static int TableColSortCol(const ImGuiTableColumnSortSpecs& s) { return s.ColumnIndex; }
 static int TableColSortDir(const ImGuiTableColumnSortSpecs& s) { return s.SortDirection; }
 static void ClearSortSpecsDirty(ImGuiTableSortSpecs* s) { s->SpecsDirty = false; }
+static void SetNextWindowDetached(bool detached, bool no_taskbar_icon, bool no_decoration, bool top_level) {
+    if (!detached) {
+        return;
+    }
+    ImGuiWindowClass window_class;
+    window_class.ParentViewportId = top_level ? 0 : static_cast<ImGuiID>(-1);
+    window_class.ViewportFlagsOverrideSet |= ImGuiViewportFlags_NoAutoMerge;
+    if (no_taskbar_icon) {
+        window_class.ViewportFlagsOverrideSet |= ImGuiViewportFlags_NoTaskBarIcon;
+    }
+    if (no_decoration) {
+        window_class.ViewportFlagsOverrideSet |= ImGuiViewportFlags_NoDecoration;
+    }
+    ImGui::SetNextWindowClass(&window_class);
+}
+static void SetNextWindowMainViewport() {
+    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+    if (main_viewport != nullptr) {
+        ImGui::SetNextWindowViewport(main_viewport->ID);
+    }
+}
 
 
 // ── String/wstring helpers ─────────────────────────────────────
@@ -58,6 +80,13 @@ static void BulletTextV(const std::string& fmt, const std::vector<std::string>& 
     for(const auto& a:args){auto p=s.find("%s");if(p==std::string::npos)break;s.replace(p,2,a);}
     ImGui::BulletText("%s", s.c_str());
 }
+static ImGuiWindowFlags DefaultWindowFlags(int flags, bool allow_docking = false) {
+    ImGuiWindowFlags window_flags = static_cast<ImGuiWindowFlags>(flags);
+    if (!allow_docking) {
+        window_flags = static_cast<ImGuiWindowFlags>(window_flags | ImGuiWindowFlags_NoDocking);
+    }
+    return window_flags;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  MODULE
@@ -83,26 +112,30 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
 
     PY4GW::imgui_bindings::register_style(m);
     // ═══════════════ WINDOW ═════════════════════════════════════
-    // Legacy parity: begin has THREE overloads - (name) / (name, flags) / (name, p_open,
-    // flags) - all returning the window-visible bool. The library calls begin(name),
-    // begin(name, flags) AND begin(name, True, flags); the single bool* overload did not
-    // accept the 2-arg (name, flags) form. p_open is taken BY VALUE (the library passes
-    // True/False literals and reads only the return), matching legacy ImGui_Begin.
-    m.def("begin", [](const char* name) -> bool { return ImGui::Begin(name); },
-          py::arg("name"));
-    m.def("begin", [](const char* name, int flags) -> bool { return ImGui::Begin(name, nullptr, flags); },
-          py::arg("name"), py::arg("flags"));
-    // 3rd overload: legacy bool* p_open (accepts None -> nullptr, or a bool). flags is
-    // NOT defaulted so this overload can never shadow the 2-arg begin(name, flags) form.
-    // (A greedy py::object p_open with a defaulted flags matched begin(name, flags_enum),
-    // then threw on enum->bool - pybind enums have no __bool__ - silently killing the
-    // window under the draw catch-all.)
-    m.def("begin", py::overload_cast<const char*, bool*, ImGuiWindowFlags>(&ImGui::Begin),
-          py::arg("name"), py::arg("p_open"), py::arg("flags"));
-    m.def("end", &ImGui::End);
+    // Three begin overloads:
+    //   begin(name)                -> bool               (no close button)
+    //   begin(name, flags)         -> bool               (no close button, with flags)
+    //   begin(name, p_open, flags) -> (bool, bool)       (close button: visible, still_open)
+    m.def("begin", [](const char* name, bool dockable) -> bool {
+        return ImGui::Begin(name, nullptr, DefaultWindowFlags(0, dockable));
+    }, py::arg("name"), py::arg("dockable") = false);
+    m.def("begin", [](const char* name, int flags, bool dockable) -> bool {
+        return ImGui::Begin(name, nullptr, DefaultWindowFlags(flags, dockable));
+    }, py::arg("name"), py::arg("flags"), py::arg("dockable") = false);
+    m.def("begin", [](const char* name, py::object p_open, int flags, bool dockable) -> py::tuple {
+        if (p_open.is_none()) {
+            bool vis = ImGui::Begin(name, nullptr, DefaultWindowFlags(flags, dockable));
+            return py::make_tuple(vis, true);
+        }
+        bool open = p_open.cast<bool>();
+        bool vis = ImGui::Begin(name, &open, DefaultWindowFlags(flags, dockable));
+        return py::make_tuple(vis, open);
+    }, py::arg("name"), py::arg("p_open") = py::none(), py::arg("flags") = 0, py::arg("dockable") = false);
+    // Legacy explicit close-button window (restored). Returns (visible, still_open).
     m.def("begin_with_close", [](const char* name, bool p_open, int flags) -> py::tuple {
         bool open = p_open; bool vis = ImGui::Begin(name, &open, flags); return py::make_tuple(vis, open);
     }, py::arg("name"), py::arg("p_open"), py::arg("flags") = 0);
+    m.def("end", &ImGui::End);
 
     m.def("begin_child", py::overload_cast<const char*, const ImVec2&, ImGuiChildFlags, ImGuiWindowFlags>(&ImGui::BeginChild),
           py::arg("id"), py::arg("size") = ImVec2(0,0), py::arg("border") = 0, py::arg("flags") = 0);  // legacy kwarg names id/size/border/flags
@@ -126,6 +159,15 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("set_next_window_bg_alpha", &ImGui::SetNextWindowBgAlpha, py::arg("alpha"));
     m.def("set_next_window_scroll", &ImGui::SetNextWindowScroll, py::arg("scroll"));
     m.def("set_next_window_viewport", &ImGui::SetNextWindowViewport, py::arg("viewport_id"));
+    m.def(
+        "set_next_window_detached",
+        &SetNextWindowDetached,
+        py::arg("detached") = true,
+        py::arg("no_taskbar_icon") = false,
+        py::arg("no_decoration") = false,
+        py::arg("top_level") = true
+    );
+    m.def("set_next_window_main_viewport", &SetNextWindowMainViewport);
 
     m.def("set_window_pos", [](float x, float y, ImGuiCond cond){ ImGui::SetWindowPos(ImVec2(x, y), cond); },
           py::arg("x"), py::arg("y"), py::arg("cond") = 0);  // legacy three-scalar form
@@ -185,10 +227,33 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
             const auto id = static_cast<FontId>(idx);
             ImGui::PushFont(mgr.Get(id), mgr.GetSize(id) * scale);
         } else {
-            ImGui::PushFont(nullptr, ImGui::GetFontSize() * scale);
+            // Scale the CURRENT font by its UNSCALED base size. GetFontSize()
+            // returns the already-globally-scaled value, so feeding it back into
+            // PushFont() would re-apply FontScaleMain/FontScaleDpi (double scale).
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * scale);
         }
     }, py::arg("font_index"), py::arg("scale") = 1.0f);
     m.def("pop_font_scaled", &ImGui::PopFont);
+
+    // ImGui 1.92 dynamic-font entry points. Fonts now scale continuously, so
+    // these render any style at any pixel size instead of being limited to the
+    // fixed 24-id (4 style x 6 size) table above. All balance with pop_font.
+    //
+    // Push a style font (0=Regular,1=Bold,2=Italic,3=BoldItalic) at an absolute
+    // pixel size. size <= 0 keeps the current shared size.
+    m.def("push_style_font", [](int style, float size) {
+        auto& mgr = PY4GW::imgui::FontManager::Instance();
+        ImGui::PushFont(mgr.GetStyleFont(style), size > 0.0f ? size : 0.0f);
+    }, py::arg("style"), py::arg("size") = 0.0f);
+    // Re-scale the CURRENT font to an absolute base size (before global factors).
+    m.def("push_font_size", [](float size) {
+        ImGui::PushFont(nullptr, size);
+    }, py::arg("size"));
+    // Global font scale = style.FontScaleMain, the 1.92 replacement for the
+    // obsolete io.FontGlobalScale / SetWindowFontScale. Scales every window.
+    m.def("get_global_font_scale", []() { return ImGui::GetStyle().FontScaleMain; });
+    m.def("set_global_font_scale", [](float scale) { ImGui::GetStyle().FontScaleMain = scale; },
+          py::arg("scale"));
 
     // ═══════════════ TEXT ═══════════════════════════════════════
     m.def("text_unformatted", &ImGui::TextUnformatted, py::arg("text"), py::arg("text_end") = nullptr);
@@ -640,6 +705,11 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("get_drag_drop_payload", &ImGui::GetDragDropPayload, py::return_value_policy::reference);
 
     PY4GW::imgui_bindings::register_docking(m);
+    m.def("is_docking_enabled", &PY4GW::imgui::IsDockingEnabled);
+    m.def("set_docking_enabled", &PY4GW::imgui::SetDockingEnabled, py::arg("enabled"));
+    m.def("is_multi_viewport_enabled", &PY4GW::imgui::IsMultiViewportEnabled);
+    m.def("set_multi_viewport_enabled", &PY4GW::imgui::SetMultiViewportEnabled, py::arg("enabled"));
+    m.def("has_multi_viewport_support", &PY4GW::imgui::HasMultiViewportSupport);
     // ═══════════════ VIEWPORT ═══════════════════════════════════
     m.def("get_main_viewport", &ImGui::GetMainViewport, py::return_value_policy::reference);
     m.def("get_window_viewport", &ImGui::GetWindowViewport, py::return_value_policy::reference);
@@ -673,6 +743,11 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("debug_flash_style_color", &ImGui::DebugFlashStyleColor, py::arg("idx"));
     m.def("debug_start_item_picker", &ImGui::DebugStartItemPicker);
     m.def("debug_text_encoding", [](const char* text) { ImGui::DebugTextEncoding(text); }, py::arg("text"));
+
+
+    // ═══════════════ MULTI-SELECT ════════════════════════════════
+    m.def("begin_multi_select", &ImGui::BeginMultiSelect, py::arg("flags") = 0, py::arg("selection_size") = -1, py::arg("items_count") = -1);
+    m.def("end_multi_select", &ImGui::EndMultiSelect);
 
 
     // ── domain modules assembled into the PyImGui module ──
