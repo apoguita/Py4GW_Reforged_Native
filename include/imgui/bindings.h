@@ -51,7 +51,7 @@ void register_drawlist(py::module_& m);
 void register_io(py::module_& m);
 
 // Vendored imgui addons exposed as PyImGui submodules: filebrowser, hotkey,
-// markdown, memory_editor, anim.
+// markdown, memory_editor, anim, text_editor.
 void register_addons(py::module_& m);
 
 }  // namespace PY4GW::imgui_bindings

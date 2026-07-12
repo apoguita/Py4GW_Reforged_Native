@@ -8,10 +8,13 @@
 #include <ImGuiFileBrowser.h>
 #include <imgui_memory_editor.h>
 #include <im_anim.h>
+#include <TextEditor.h>
 
 #include <pybind11/stl.h>
 
+#include <cctype>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -153,6 +156,113 @@ void register_anim(py::module_& parent) {
              py::arg("wave_type") = 0, py::arg("phase") = 0.0f, py::arg("dt") = 0.0f);
 }
 
+// Map a lowercase language name to one of TextEditor's built-in language
+// definitions. "none"/unknown clears highlighting (nullptr).
+const TextEditor::Language* ResolveLanguage(const std::string& name) {
+    static const std::unordered_map<std::string, const TextEditor::Language* (*)()> table = {
+        {"c", &TextEditor::Language::C},
+        {"cpp", &TextEditor::Language::Cpp},
+        {"cs", &TextEditor::Language::Cs},
+        {"angelscript", &TextEditor::Language::AngelScript},
+        {"lua", &TextEditor::Language::Lua},
+        {"python", &TextEditor::Language::Python},
+        {"glsl", &TextEditor::Language::Glsl},
+        {"hlsl", &TextEditor::Language::Hlsl},
+        {"json", &TextEditor::Language::Json},
+        {"markdown", &TextEditor::Language::Markdown},
+        {"sql", &TextEditor::Language::Sql},
+    };
+    auto it = table.find(name);
+    return it == table.end() ? nullptr : it->second();
+}
+
+void register_text_editor(py::module_& parent) {
+    py::module_ m = parent.def_submodule("text_editor", "Syntax-highlighting code editor (ImGuiColorTextEdit).");
+
+    py::class_<TextEditor>(m, "TextEditor")
+        .def(py::init<>())
+
+        // render
+        .def("render", [](TextEditor& e, const std::string& title, std::pair<float, float> size, bool border) {
+                 e.Render(title.c_str(), ImVec2(size.first, size.second), border);
+             }, py::arg("title"), py::arg("size") = std::make_pair(0.0f, 0.0f), py::arg("border") = false,
+             "Draw the editor. Size (0,0) fills the available region.")
+        .def("set_focus", &TextEditor::SetFocus)
+
+        // text access (UTF-8)
+        .def("set_text", [](TextEditor& e, const std::string& t) { e.SetText(t); }, py::arg("text"))
+        .def("get_text", &TextEditor::GetText)
+        .def("clear_text", &TextEditor::ClearText)
+        .def("is_empty", &TextEditor::IsEmpty)
+        .def("get_line_count", &TextEditor::GetLineCount)
+        .def("get_line_text", &TextEditor::GetLineText, py::arg("line"))
+
+        // language / syntax highlighting
+        .def("set_language", [](TextEditor& e, const std::string& name) {
+                 std::string lower;
+                 lower.reserve(name.size());
+                 for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+                 e.SetLanguage(ResolveLanguage(lower));
+             }, py::arg("name"),
+             "Select syntax highlighting: c, cpp, cs, angelscript, lua, python, glsl, hlsl, json, markdown, sql, or none.")
+        .def("get_language_name", &TextEditor::GetLanguageName)
+        .def("has_language", &TextEditor::HasLanguage)
+
+        // color palette
+        .def("set_dark_palette", [](TextEditor& e) { e.SetPalette(TextEditor::GetDarkPalette()); })
+        .def("set_light_palette", [](TextEditor& e) { e.SetPalette(TextEditor::GetLightPalette()); })
+
+        // editor options
+        .def("set_read_only_enabled", &TextEditor::SetReadOnlyEnabled, py::arg("value"))
+        .def("is_read_only_enabled", &TextEditor::IsReadOnlyEnabled)
+        .def("set_show_line_numbers_enabled", &TextEditor::SetShowLineNumbersEnabled, py::arg("value"))
+        .def("is_show_line_numbers_enabled", &TextEditor::IsShowLineNumbersEnabled)
+        .def("set_show_whitespaces_enabled", &TextEditor::SetShowWhitespacesEnabled, py::arg("value"))
+        .def("is_show_whitespaces_enabled", &TextEditor::IsShowWhitespacesEnabled)
+        .def("set_auto_indent_enabled", &TextEditor::SetAutoIndentEnabled, py::arg("value"))
+        .def("is_auto_indent_enabled", &TextEditor::IsAutoIndentEnabled)
+        .def("set_tab_size", &TextEditor::SetTabSize, py::arg("value"))
+        .def("get_tab_size", &TextEditor::GetTabSize)
+
+        // clipboard / history
+        .def("cut", &TextEditor::Cut)
+        .def("copy", &TextEditor::Copy)
+        .def("paste", &TextEditor::Paste)
+        .def("undo", &TextEditor::Undo)
+        .def("redo", &TextEditor::Redo)
+        .def("can_undo", &TextEditor::CanUndo)
+        .def("can_redo", &TextEditor::CanRedo)
+
+        // cursors / selection (zero-based)
+        .def("set_cursor", &TextEditor::SetCursor, py::arg("line"), py::arg("column"))
+        .def("get_cursor_position", [](const TextEditor& e) {
+                 TextEditor::CursorPosition p = e.GetCurrentCursorPosition();
+                 return std::make_pair(p.line, p.column);
+             }, "Returns (line, column) of the current cursor.")
+        .def("select_all", &TextEditor::SelectAll)
+        .def("select_line", &TextEditor::SelectLine, py::arg("line"))
+        .def("clear_cursors", &TextEditor::ClearCursors)
+
+        // scrolling
+        .def("scroll_to_line", [](TextEditor& e, int line, int alignment) {
+                 e.ScrollToLine(line, static_cast<TextEditor::Scroll>(alignment));
+             }, py::arg("line"), py::arg("alignment") = 0,
+             "alignment: 0=top, 1=middle, 2=bottom.")
+
+        // find / replace
+        .def("select_first_occurrence_of", [](TextEditor& e, const std::string& t, bool cs, bool ww) {
+                 e.SelectFirstOccurrenceOf(t, cs, ww);
+             }, py::arg("text"), py::arg("case_sensitive") = true, py::arg("whole_word") = false)
+        .def("select_next_occurrence_of", [](TextEditor& e, const std::string& t, bool cs, bool ww) {
+                 e.SelectNextOccurrenceOf(t, cs, ww);
+             }, py::arg("text"), py::arg("case_sensitive") = true, py::arg("whole_word") = false)
+        .def("select_all_occurrences_of", [](TextEditor& e, const std::string& t, bool cs, bool ww) {
+                 e.SelectAllOccurrencesOf(t, cs, ww);
+             }, py::arg("text"), py::arg("case_sensitive") = true, py::arg("whole_word") = false)
+        .def("open_find_replace_window", &TextEditor::OpenFindReplaceWindow)
+        .def("close_find_replace_window", &TextEditor::CloseFindReplaceWindow);
+}
+
 }  // namespace
 
 void register_addons(py::module_& m) {
@@ -161,6 +271,7 @@ void register_addons(py::module_& m) {
     register_markdown(m);
     register_memory_editor(m);
     register_anim(m);
+    register_text_editor(m);
 }
 
 }  // namespace PY4GW::imgui_bindings
