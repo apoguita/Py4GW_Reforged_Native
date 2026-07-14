@@ -54,6 +54,16 @@ void bind_dx_overlay(py::module_& m) {
         .def("DrawPolyFilled3D", &DXOverlay::DrawPolyFilled3D, py::arg("center"), py::arg("radius"), py::arg("color") = 0xFFFFFFFF, py::arg("numSegments") = 3, py::arg("autoZ") = true, py::arg("use_occlusion") = true, py::arg("segments") = 16, py::arg("floor_offset") = 0.0f)
 
         .def("Setup3DView", &DXOverlay::Setup3DView)
+        .def("DrawBeam3D", &DXOverlay::DrawBeam3D,
+            py::arg("x"), py::arg("y"), py::arg("z"),
+            py::arg("height") = 300.0f, py::arg("radius") = 60.0f, py::arg("argb") = 0xFF20FF40,
+            py::arg("top_alpha") = 0.0f, py::arg("additive") = true,
+            "Shader-based light beam (no texture). top_alpha 0..1 = top fade; "
+            "additive = light blend. Call from a PyWorldRender.register_draw callback to occlude.")
+        .def("set_occlusion_tuning", &DXOverlay::SetOcclusionTuning,
+            py::arg("near_z"), py::arg("far_z"), py::arg("zfunc"), py::arg("reverse_z"))
+        .def("get_depth_diagnostics", &DXOverlay::GetDepthDiagnostics)
+        .def("draw_self_occlusion_test", &DXOverlay::DrawSelfOcclusionTest)
         .def("ApplyStencilMask", &DXOverlay::ApplyStencilMask)
         .def("ResetStencilMask", &DXOverlay::ResetStencilMask)
         .def("DrawTexture", &DXOverlay::DrawTexture, py::arg("file_path"), py::arg("screen_pos_x"), py::arg("screen_pos_y"), py::arg("width") = 100.0f, py::arg("height") = 100.0f, py::arg("int_tint") = 0xFFFFFFFF)

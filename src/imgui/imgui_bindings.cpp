@@ -196,6 +196,20 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     m.def("get_window_width", &ImGui::GetWindowWidth);
     m.def("get_window_height", &ImGui::GetWindowHeight);
     m.def("get_content_region_avail", &ImGui::GetContentRegionAvail);
+    // ImGui 1.92 removed GetWindowContentRegionMin/Max from the public API. Restored using public API
+    // only (avoiding imgui_internal.h, which adds internal overloads that make &ImGui::Func ambiguous
+    // for the other bindings in this TU). Equivalent when queried at the content start — which is how
+    // these were used (e.g. the pathing-map renderer calls them right after begin_child): the content
+    // region min is the initial cursor position (window-local), and max is that plus the avail size.
+    m.def("get_window_content_region_min", []() -> std::pair<float, float> {
+        ImVec2 start = ImGui::GetCursorStartPos();
+        return { start.x, start.y };
+    });
+    m.def("get_window_content_region_max", []() -> std::pair<float, float> {
+        ImVec2 start = ImGui::GetCursorStartPos();
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        return { start.x + avail.x, start.y + avail.y };
+    });
     m.def("is_window_appearing", &ImGui::IsWindowAppearing);
     m.def("is_window_collapsed", &ImGui::IsWindowCollapsed);
     m.def("is_window_focused", &ImGui::IsWindowFocused, py::arg("flags") = 0);

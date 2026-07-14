@@ -31,6 +31,7 @@
 #include "GW/textures/gw_dat_reader.h"
 #include "GW/trade/trade.h"
 #include "GW/ui/ui.h"
+#include "GW/world_render/world_render.h"
 
 #include <array>
 
@@ -50,7 +51,7 @@ bool ScanMemoryManager() {
 void ShutdownMemoryManager() {
 }
 
-constexpr std::array<InitStep, 26> kInitSteps = {{
+constexpr std::array<InitStep, 27> kInitSteps = {{
     {"game_thread", "initialize", &GW::game_thread::Initialize, &GW::game_thread::Shutdown},
     {"stoc", "initialize", &GW::StoC::Initialize, &GW::StoC::Shutdown},
     {"render", "initialize", &GW::render::Initialize, &GW::render::Shutdown},
@@ -77,6 +78,7 @@ constexpr std::array<InitStep, 26> kInitSteps = {{
     {"textures", "initialize", &GW::textures::Initialize, &GW::textures::Shutdown},
     {"dialog", "initialize", &GW::dialog::Initialize, &GW::dialog::Shutdown},
     {"native_ui", "initialize", &GW::native_ui::Initialize, &GW::native_ui::Shutdown},
+    {"world_render", "initialize", &GW::world_render::Initialize, &GW::world_render::Shutdown},
 }};
 
 void ShutdownInitializedSteps(size_t count) {

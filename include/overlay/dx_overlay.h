@@ -55,6 +55,30 @@ public:
 
     void Setup3DView();
 
+    // Shader-based additive light beam (the GWToolbox GameWorldRenderer approach:
+    // colored geometry, NOT a texture, drawn with a vertex/pixel shader that gets
+    // the view/projection as constants so it lands correctly in GW's HDR world
+    // buffer). Draw this from a world_render (in-world) callback so it occludes.
+    // base at (x,y,z=ground); beam rises `height` (up = -z here); `radius` = width.
+    // top_alpha (0..1) = the top's alpha relative to base (0 = fade out); additive =
+    // additive light blend vs. normal alpha blend.
+    void DrawBeam3D(float x, float y, float z, float height, float radius, uint32_t argb,
+                    float top_alpha = 0.0f, bool additive = true);
+
+    // Runtime depth/occlusion tuning for Setup3DView (diagnostic-driven, so the
+    // exact GW depth convention can be dialed in live). zfunc is a D3DCMPFUNC
+    // value (LESSEQUAL=4, GREATEREQUAL=7, ...). reverse_z swaps near/far.
+    void SetOcclusionTuning(float near_z, float far_z, int zfunc, bool reverse_z);
+
+    // Reports live render-target / depth-stencil / viewport state (for
+    // diagnosing why occlusion fails: mismatched/absent depth surface, etc.).
+    std::string GetDepthDiagnostics();
+
+    // Self-contained depth-hardware test (clears depth, draws overlapping quads
+    // at explicit depths). Proves whether our depth read+write path works,
+    // independent of GW's scene depth. See the .cpp for the expected result.
+    void DrawSelfOcclusionTest();
+
     void DrawLine(GW::Vec2f from, GW::Vec2f to, D3DCOLOR color, float thickness);
     void DrawLine3D(GW::Vec3f from, GW::Vec3f to, D3DCOLOR color, bool use_occlusion = true, int segments = 1, float floor_offset = 0.0f);
     void DrawTriangle(GW::Vec2f p1, GW::Vec2f p2, GW::Vec2f p3, D3DCOLOR color, float thickness = 1.0f);

@@ -30,6 +30,17 @@ namespace {
 volatile LONG s_handling = 0;
 volatile LONG s_shutting_down = 0;
 bool s_installed = false;
+
+// ntdll's authoritative "process teardown has begun" flag. LdrShutdownProcess sets
+// it at the very START of process exit - before ANY DLL_PROCESS_DETACH, static
+// destructor, or dependent-DLL unload runs, and it is visible from every thread.
+// Consulting it lets us suppress ALL exit-time teardown faults (our own static
+// dtors freeing py::function objects, the GPU driver unloading, etc.) regardless of
+// thread or unload order. The DllMain NotifyShutdown latch alone was too late,
+// because the CRT runs a DLL's static destructors during dllmain_crt_process_detach
+// before the user DllMain body executes. Resolved once in Initialize().
+using RtlDllShutdownInProgressFn = BOOLEAN(NTAPI*)();
+RtlDllShutdownInProgressFn s_rtl_dll_shutdown_in_progress = nullptr;
 LPTOP_LEVEL_EXCEPTION_FILTER s_prev_filter = nullptr;
 PVOID s_vectored_handler = nullptr;
 uintptr_t s_append_stack_fn = 0;
@@ -42,6 +53,24 @@ bool s_dump_generation_enabled = false;
 wchar_t s_crash_dir[MAX_PATH] = {0};
 bool s_crash_dir_ready = false;
 std::string s_crash_dir_utf8;
+// Absolute path to the injection log, cached once at crash-dir setup so the crash
+// path never resolves a relative name against the process CWD (which is the DLL /
+// module dir): crash artifacts and the injection log must ALWAYS sit in the game
+// folder (next to Gw.exe), never in the DLL directory.
+wchar_t s_injection_log_path[MAX_PATH] = {0};
+
+// Episode dedup: one real fault cascades through several handler paths (the vectored
+// first-chance handler, the top-level SEH filter, sometimes the GW-engine assert
+// detour), and a driver can throw a burst of first-chance faults within a few ms -
+// each at a DIFFERENT address. Keying on the fault signature therefore leaked
+// duplicates, so we dedup purely by TIME: the first report latches a folder, and any
+// further report within the window reuses it (overwriting, not duplicating). One
+// crash burst = one folder.
+wchar_t s_last_report_dir[MAX_PATH] = {0};
+ULONGLONG s_last_report_tick = 0;
+// Any report arriving within this window of the previous one is treated as the same
+// crash episode and folded into the same folder.
+constexpr ULONGLONG kEpisodeWindowMs = 5000;
 
 char s_gw_text[32768] = {0};
 char s_panic_expr[512] = {0};
@@ -115,6 +144,30 @@ bool IsCrashCandidate(DWORD code) {
     }
 }
 
+// True if `addr` lies inside Gw.exe or our own Py4GW.dll. Used to gate the vectored
+// (first-chance) handler only: a first-chance fault inside a third-party/system
+// module - e.g. the GPU driver throwing during the close/device-release sequence - is
+// virtually always handled by that module's own SEH and is not our crash, so we must
+// not spawn a report for it. Anything genuinely fatal still reaches the top-level SEH
+// filter, which reports regardless of module, so nothing real is lost by ignoring it
+// here. A fault whose address is in NO loaded module (a wild jump) is likewise left to
+// the SEH filter.
+bool IsAddressInOwnedModule(const void* addr) {
+    if (addr == nullptr) {
+        return false;
+    }
+    HMODULE module = nullptr;
+    if (!::GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(addr),
+            &module)) {
+        return false;
+    }
+    const HMODULE exe = ::GetModuleHandleW(nullptr);
+    const HMODULE self = PY4GW::process_manager::GetModuleHandle();
+    return module == exe || (self != nullptr && module == self);
+}
+
 struct JBuf {
     char* p;
     char* const e;
@@ -170,32 +223,58 @@ void MakeDirTree(const wchar_t* path) {
     ::CreateDirectoryW(temp, nullptr);
 }
 
+// Writes a whole buffer to a report file in one shot, creating the crash folder on
+// demand FIRST (idempotent). Does nothing when there is no content, so a capture
+// that produced nothing - or faulted before producing anything - never leaves an
+// empty file, and the folder itself only ever materializes once there is a real
+// artifact to put in it. Every crash artifact goes through here for that reason.
+void WriteReportFile(const wchar_t* path, const char* data, size_t size) {
+    if (!path || !path[0] || !data || size == 0) {
+        return;
+    }
+    if (s_last_report_dir[0]) {
+        MakeDirTree(s_last_report_dir);
+    }
+    HANDLE file = ::CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    ::WriteFile(file, data, static_cast<DWORD>(size), &written, nullptr);
+    ::CloseHandle(file);
+}
+
 void BuildReportFolder(wchar_t* out, size_t cap) {
     SYSTEMTIME time = {};
     ::GetLocalTime(&time);
-    // A single crash is reported twice - the vectored handler first, then the
-    // top-level (structured) filter ~1s later - which previously produced two
-    // folders differing only in the seconds field. Drop the seconds so both land
-    // in one folder (same name -> the second report overwrites the first). The
-    // PID-TID suffix still keeps genuinely distinct crashes apart.
+    // Folder name is purely a human-readable, sortable timestamp: py4gw-YYYYMMDD-HHMMSS.
+    // No PID/TID and no millisecond suffix - those only ever fragmented one crash into
+    // several folders. Duplicate reports of the same crash are folded together by the
+    // time-window dedup latch (see OnException); the faulting TID, if wanted, is still
+    // in the sidecar JSON.
     _snwprintf_s(
         out,
         cap,
         _TRUNCATE,
-        L"%s\\py4gw-%04u%02u%02u-%02u%02u-%lu-%lu",
+        L"%s\\py4gw-%04u%02u%02u-%02u%02u%02u",
         s_crash_dir,
         time.wYear,
         time.wMonth,
         time.wDay,
         time.wHour,
         time.wMinute,
-        ::GetCurrentProcessId(),
-        ::GetCurrentThreadId());
+        time.wSecond);
 }
 
 void AppendInjectionLog(const char* line) {
+    // Never write a relative path here: the process CWD is the DLL/module dir, and
+    // no injection log or crash artifact may land there. s_injection_log_path is an
+    // absolute path in the game folder (set by EnsureCrashDir); skip if unset.
+    if (!s_injection_log_path[0]) {
+        return;
+    }
     HANDLE file = ::CreateFileW(
-        L"Py4GW_injection_log.txt",
+        s_injection_log_path,
         FILE_APPEND_DATA,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
@@ -210,14 +289,46 @@ void AppendInjectionLog(const char* line) {
     ::CloseHandle(file);
 }
 
-void WriteGwText(const wchar_t* path, const char* text) {
-    HANDLE file = ::CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
+// Appends one thread state's Python frames to `out`, guarding EACH frame read on its
+// own. Walking a thread we do not own, without the GIL (e.g. a live worker or the
+// crashing native thread), can tear a frame mid-read; a per-frame guard means such a
+// fault truncates only that one stack instead of aborting the entire dump. The
+// crashing thread is always safe (it is frozen in its own handler) - this same helper
+// serves it too. Strong refs from GetFrame/GetCode/GetBack are intentionally leaked;
+// nothing is ever deallocated during a crash.
+void DumpPyThreadFrames(JBuf& out, PyThreadState* tstate) {
+    PyFrameObject* frame = nullptr;
+    __try {
+        frame = ::PyThreadState_GetFrame(tstate);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        JAppend(out, "  [top frame unreadable]\r\n");
         return;
     }
-    DWORD written = 0;
-    ::WriteFile(file, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
-    ::CloseHandle(file);
+    if (frame == nullptr) {
+        JAppend(out, "  (no active frame)\r\n");
+        return;
+    }
+    int depth = 0;
+    while (frame != nullptr && depth < 96) {
+        __try {
+            PyCodeObject* code = ::PyFrame_GetCode(frame);
+            const int lineno = ::PyFrame_GetLineNumber(frame);
+            const char* fname = "<unknown>";
+            const char* qual = "<unknown>";
+            if (code != nullptr) {
+                const char* f = ::PyUnicode_AsUTF8(code->co_filename);
+                const char* q = ::PyUnicode_AsUTF8(code->co_qualname);
+                if (f != nullptr) fname = f;
+                if (q != nullptr) qual = q;
+            }
+            JAppend(out, "#%02d %s:%d in %s\r\n", depth, fname, lineno, qual);
+            frame = ::PyFrame_GetBack(frame);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            JAppend(out, "#%02d [frame unreadable - stack truncated here]\r\n", depth);
+            break;
+        }
+        ++depth;
+    }
 }
 
 }  // namespace
@@ -275,28 +386,27 @@ bool CrashHandler::EnsureCrashDir() {
         return true;
     }
 
-    // Crash reports must land in the injection folder (where Gw.exe lives),
-    // NOT beside the DLL. The working directory is set to the module dir for
-    // script loading, so GetCurrentDirectory() would put reports next to the
-    // DLL - use the process (exe) directory explicitly, matching where the
-    // injection log is written.
-    wchar_t base[MAX_PATH] = {};
+    // Crash reports must land in the game folder (where Gw.exe lives), NEVER
+    // beside the DLL. The working directory is set to the module dir for script
+    // loading, so GetCurrentDirectory() and GetModuleDirectory() both point at the
+    // DLL dir - using either would leak reports there. GetProcessDirectory() is
+    // Gw.exe's folder and is the ONLY acceptable base; if it is somehow
+    // unavailable we refuse to set up the crash dir rather than fall back to the
+    // DLL directory under any circumstance.
     const std::filesystem::path process_dir = PY4GW::process_manager::GetProcessDirectory();
-    if (!process_dir.empty()) {
-        wcsncpy_s(base, process_dir.c_str(), _TRUNCATE);
-    } else {
-        const DWORD length = ::GetCurrentDirectoryW(MAX_PATH, base);
-        if (length == 0 || length >= MAX_PATH) {
-            const std::filesystem::path module_dir = PY4GW::process_manager::GetModuleDirectory();
-            if (module_dir.empty()) {
-                return false;
-            }
-            wcsncpy_s(base, module_dir.c_str(), _TRUNCATE);
-        }
+    if (process_dir.empty()) {
+        return false;
     }
+    wchar_t base[MAX_PATH] = {};
+    wcsncpy_s(base, process_dir.c_str(), _TRUNCATE);
 
     _snwprintf_s(s_crash_dir, MAX_PATH, _TRUNCATE, L"%s\\crashes", base);
     MakeDirTree(s_crash_dir);
+
+    // The injection log sits next to Gw.exe (parent of the crashes folder),
+    // matching DllMain's detach message. Cache the absolute path so the crash path
+    // never resolves a relative name against the process CWD (= the DLL dir).
+    _snwprintf_s(s_injection_log_path, MAX_PATH, _TRUNCATE, L"%s\\Py4GW_injection_log.txt", base);
     s_crash_dir_ready = true;
 
     char utf8[MAX_PATH * 2] = {};
@@ -313,6 +423,10 @@ void CrashHandler::Initialize() {
 
     s_installed = true;
     EnsureCrashDir();
+    if (HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll")) {
+        s_rtl_dll_shutdown_in_progress = reinterpret_cast<RtlDllShutdownInProgressFn>(
+            ::GetProcAddress(ntdll, "RtlDllShutdownInProgress"));
+    }
     ClearCallbackFilterPolicy();
     ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     ::SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS);
@@ -446,6 +560,15 @@ LONG WINAPI CrashHandler::VectoredHandler(EXCEPTION_POINTERS* info) {
     if (!IsCrashCandidate(info->ExceptionRecord->ExceptionCode)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
+    // Only report first-chance faults that originate in our own code (Gw.exe or
+    // Py4GW.dll). First-chance faults inside third-party/system modules - notably the
+    // GPU driver throwing during the shutdown/device-release sequence - are handled by
+    // those modules and are not our crash; ignoring them here is what makes shutdown
+    // noise disappear. A genuinely fatal fault (even in a third-party module) is still
+    // caught by the top-level SEH filter, which does not filter by module.
+    if (!IsAddressInOwnedModule(info->ExceptionRecord->ExceptionAddress)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (::InterlockedCompareExchange(&s_handling, 0, 0) != 0) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -508,6 +631,14 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
     if (::InterlockedCompareExchange(&s_shutting_down, 0, 0) != 0) {
         return false;
     }
+    // Authoritative teardown check: once LdrShutdownProcess has begun (e.g. the user
+    // closed the GW client - a path that never runs our explicit shutdown, so
+    // s_shutting_down stays 0), every fault is exit-time cleanup noise (static dtors
+    // freeing Python objects, the GPU driver unloading, first-chance AVs handled by
+    // the OS). None of it is actionable and it must NOT spawn a crash folder.
+    if (s_rtl_dll_shutdown_in_progress && s_rtl_dll_shutdown_in_progress()) {
+        return false;
+    }
     const char* source_label = SourceLabel(source);
     const bool write_dump = s_dump_generation_enabled && ShouldWriteDumpForSource(source);
     if (::InterlockedCompareExchange(&s_handling, 1, 0) != 0) {
@@ -523,8 +654,27 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
         wchar_t dump_path[MAX_PATH] = {};
         wchar_t json_path[MAX_PATH] = {};
         wchar_t stack_path[MAX_PATH] = {};
-        BuildReportFolder(report_dir, MAX_PATH);
-        MakeDirTree(report_dir);
+
+        // Reuse the latched folder for any report within the episode window; otherwise
+        // mint a fresh timestamped folder. Time-only (not fault signature) is what folds
+        // a cascade of differently-addressed reports - vectored handler, SEH filter,
+        // GW-engine detour, driver first-chance bursts - into one folder per crash.
+        const ULONGLONG now_tick = ::GetTickCount64();
+        const bool same_episode =
+            s_last_report_dir[0] != 0 &&
+            (now_tick - s_last_report_tick) <= kEpisodeWindowMs;
+
+        if (same_episode) {
+            wcsncpy_s(report_dir, s_last_report_dir, _TRUNCATE);
+        } else {
+            BuildReportFolder(report_dir, MAX_PATH);
+            wcsncpy_s(s_last_report_dir, report_dir, _TRUNCATE);
+        }
+        s_last_report_tick = now_tick;
+
+        // NOTE: the folder is intentionally NOT created here. Each writer creates it
+        // on demand (via WriteReportFile) only when it actually has content, so a
+        // report that captures nothing leaves no empty folder behind.
         const wchar_t* folder_name = wcsrchr(report_dir, L'\\');
         folder_name = folder_name ? folder_name + 1 : report_dir;
         wcsncpy_s(report_name, folder_name, _TRUNCATE);
@@ -560,14 +710,18 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
             s_panic_expr[0] ? s_panic_expr : "?",
             s_panic_message[0] ? s_panic_message : "");
 
+        // Sidecar first: it is the authoritative artifact, always has content, and
+        // (being the first successful write) is what lazily materializes the folder.
+        // The rest are supplementary and each creates its own file only if it
+        // gathered something to write.
+        WriteSidecar(info, json_path, dump_name, gw_text_name, stack_name, source_label, write_dump);
         WriteStackTrace(info, stack_path);
         WritePythonStackTrace(pytrace_path);
-        WriteSidecar(info, json_path, dump_name, gw_text_name, stack_name, source_label, write_dump);
+        if (gw_text_path[0]) {
+            WriteReportFile(gw_text_path, s_gw_text, strlen(s_gw_text));
+        }
         if (write_dump) {
             WriteDump(info, dump_path, comment);
-        }
-        if (gw_text_path[0]) {
-            WriteGwText(gw_text_path, s_gw_text);
         }
 
         char dump_name_u8[MAX_PATH] = {};
@@ -606,11 +760,6 @@ bool CrashHandler::OnException(EXCEPTION_POINTERS* info, const char* source, boo
 void CrashHandler::WriteSidecar(EXCEPTION_POINTERS* info, const wchar_t* json_path,
                                 const wchar_t* dmp_name, const wchar_t* gwtext_name,
                                 const wchar_t* stack_name, const char* source, bool dump_generated) {
-    HANDLE file = ::CreateFileW(json_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        return;
-    }
-
     const DWORD code = (info && info->ExceptionRecord) ? info->ExceptionRecord->ExceptionCode : 0;
     const uintptr_t address =
         (info && info->ExceptionRecord) ? reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress) : 0;
@@ -689,108 +838,84 @@ void CrashHandler::WriteSidecar(EXCEPTION_POINTERS* info, const wchar_t* json_pa
     JAppend(json, "  \"gw_text\": \"%s\"\n", escaped_gw);
     JAppend(json, "}\n");
 
-    DWORD written = 0;
-    ::WriteFile(file, buffer, static_cast<DWORD>(json.p - buffer), &written, nullptr);
-    ::CloseHandle(file);
+    WriteReportFile(json_path, buffer, static_cast<size_t>(json.p - buffer));
 }
 
 void CrashHandler::WriteStackTrace(EXCEPTION_POINTERS* info, const wchar_t* stack_path) {
-    HANDLE file = ::CreateFileW(stack_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        return;
-    }
+    // Build the whole trace in memory, THEN write it once. static storage keeps this
+    // 16 KB off the (possibly overflowed) crashing stack; OnException is serialized by
+    // s_handling so there is no reentrancy. If StackWalk64 faults on a corrupt stack,
+    // the SEH guard keeps whatever was gathered - we never leave a half-open empty file.
+    static char buffer[16384];
+    JBuf out{ buffer, buffer + sizeof(buffer) };
 
     if (!info || !info->ContextRecord || !s_symbols_ready) {
-        const char* message = "Stack trace unavailable.\r\n";
-        DWORD written = 0;
-        ::WriteFile(file, message, static_cast<DWORD>(strlen(message)), &written, nullptr);
-        ::CloseHandle(file);
+        JAppend(out, "Stack trace unavailable.\r\n");
+        WriteReportFile(stack_path, buffer, static_cast<size_t>(out.p - buffer));
         return;
     }
 
-    CONTEXT context = *info->ContextRecord;
-    STACKFRAME64 frame = {};
-    DWORD machine = IMAGE_FILE_MACHINE_I386;
-    frame.AddrPC.Offset = context.Eip;
-    frame.AddrPC.Mode = AddrModeFlat;
-    frame.AddrFrame.Offset = context.Ebp;
-    frame.AddrFrame.Mode = AddrModeFlat;
-    frame.AddrStack.Offset = context.Esp;
-    frame.AddrStack.Mode = AddrModeFlat;
+    __try {
+        CONTEXT context = *info->ContextRecord;
+        STACKFRAME64 frame = {};
+        DWORD machine = IMAGE_FILE_MACHINE_I386;
+        frame.AddrPC.Offset = context.Eip;
+        frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = context.Ebp;
+        frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = context.Esp;
+        frame.AddrStack.Mode = AddrModeFlat;
 
-    HANDLE process = ::GetCurrentProcess();
-    HANDLE thread = ::GetCurrentThread();
-    char line[1024] = {};
-    DWORD written = 0;
-    for (int index = 0; index < 32; ++index) {
-        if (!::StackWalk64(
-                machine,
-                process,
-                thread,
-                &frame,
-                &context,
-                nullptr,
-                ::SymFunctionTableAccess64,
-                ::SymGetModuleBase64,
-                nullptr) ||
-            frame.AddrPC.Offset == 0) {
-            break;
+        HANDLE process = ::GetCurrentProcess();
+        HANDLE thread = ::GetCurrentThread();
+        for (int index = 0; index < 32; ++index) {
+            if (!::StackWalk64(
+                    machine,
+                    process,
+                    thread,
+                    &frame,
+                    &context,
+                    nullptr,
+                    ::SymFunctionTableAccess64,
+                    ::SymGetModuleBase64,
+                    nullptr) ||
+                frame.AddrPC.Offset == 0) {
+                break;
+            }
+
+            char symbol_buffer[sizeof(SYMBOL_INFO) + 256] = {};
+            auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+            symbol->MaxNameLen = 255;
+            DWORD64 displacement = 0;
+            IMAGEHLP_LINE64 line_info = {};
+            line_info.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+            DWORD line_displacement = 0;
+            const BOOL have_symbol = ::SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol);
+            const BOOL have_line = ::SymGetLineFromAddr64(process, frame.AddrPC.Offset, &line_displacement, &line_info);
+
+            char module_name[MAX_PATH] = "<unknown>";
+            if (DWORD64 module_base = ::SymGetModuleBase64(process, frame.AddrPC.Offset)) {
+                ::GetModuleFileNameA(reinterpret_cast<HMODULE>(module_base), module_name, MAX_PATH);
+            }
+
+            if (have_symbol && have_line) {
+                JAppend(out, "#%02d 0x%08llX %s!%s +0x%llX (%s:%lu)\r\n",
+                    index, frame.AddrPC.Offset, module_name, symbol->Name, displacement,
+                    line_info.FileName, line_info.LineNumber);
+            } else if (have_symbol) {
+                JAppend(out, "#%02d 0x%08llX %s!%s +0x%llX\r\n",
+                    index, frame.AddrPC.Offset, module_name, symbol->Name, displacement);
+            } else {
+                JAppend(out, "#%02d 0x%08llX %s\r\n",
+                    index, frame.AddrPC.Offset, module_name);
+            }
         }
-
-        char symbol_buffer[sizeof(SYMBOL_INFO) + 256] = {};
-        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
-        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        symbol->MaxNameLen = 255;
-        DWORD64 displacement = 0;
-        IMAGEHLP_LINE64 line_info = {};
-        line_info.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-        DWORD line_displacement = 0;
-        const BOOL have_symbol = ::SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol);
-        const BOOL have_line = ::SymGetLineFromAddr64(process, frame.AddrPC.Offset, &line_displacement, &line_info);
-
-        char module_name[MAX_PATH] = "<unknown>";
-        if (DWORD64 module_base = ::SymGetModuleBase64(process, frame.AddrPC.Offset)) {
-            ::GetModuleFileNameA(reinterpret_cast<HMODULE>(module_base), module_name, MAX_PATH);
-        }
-
-        if (have_symbol && have_line) {
-            _snprintf_s(
-                line,
-                sizeof(line),
-                _TRUNCATE,
-                "#%02d 0x%08llX %s!%s +0x%llX (%s:%lu)\r\n",
-                index,
-                frame.AddrPC.Offset,
-                module_name,
-                symbol->Name,
-                displacement,
-                line_info.FileName,
-                line_info.LineNumber);
-        } else if (have_symbol) {
-            _snprintf_s(
-                line,
-                sizeof(line),
-                _TRUNCATE,
-                "#%02d 0x%08llX %s!%s +0x%llX\r\n",
-                index,
-                frame.AddrPC.Offset,
-                module_name,
-                symbol->Name,
-                displacement);
-        } else {
-            _snprintf_s(
-                line,
-                sizeof(line),
-                _TRUNCATE,
-                "#%02d 0x%08llX %s\r\n",
-                index,
-                frame.AddrPC.Offset,
-                module_name);
-        }
-        ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        JAppend(out, "\r\n[stack walk faulted - partial trace above]\r\n");
     }
 
-    ::CloseHandle(file);
+    WriteReportFile(stack_path, buffer, static_cast<size_t>(out.p - buffer));
 }
 
 // Writes Python context for EVERY crash: walks ALL interpreter thread states
@@ -800,95 +925,87 @@ void CrashHandler::WriteStackTrace(EXCEPTION_POINTERS* info, const wchar_t* stac
 // are intentionally leaked (never dealloc during a crash).
 void CrashHandler::WritePythonStackTrace(const wchar_t* pytrace_path) {
     if (::Py_IsInitialized() == 0) {
-        return;
+        return;  // No interpreter -> no file at all (nothing to say).
     }
-    HANDLE file = ::CreateFileW(pytrace_path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    DWORD written = 0;
+    // Build the whole dump in memory, THEN write it once. static keeps the 64 KB off
+    // the crashing stack; OnException is serialized by s_handling so there is no
+    // reentrancy. Nothing is created until we actually write - and if the walk faults
+    // partway, the SEH guard preserves what we captured instead of leaving an empty file.
+    static char buffer[65536];
+    JBuf out{ buffer, buffer + sizeof(buffer) };
+
+    JAppend(out,
+        "Python context at crash (most recent call first).\r\n"
+        "The crashing thread is dumped first when it holds Python state; otherwise the\r\n"
+        "fault was on a native/GW thread and the running callback is on another thread\r\n"
+        "below. Each thread is captured independently, so one unreadable thread never\r\n"
+        "discards the rest.\r\n\r\n");
+
+    // 1) The CRASHING thread first. It is frozen (we run in its own exception handler),
+    //    so it is always safe to read and is the stack you actually want. It only holds
+    //    Python state if the fault was on a Python thread.
+    PyThreadState* crashing = nullptr;
     __try {
-        // The fault may be on a NON-Python thread (e.g. the GW game thread
-        // destroying a queued callable) where the crashing thread holds no Python
-        // state. Every crash log must still carry Python context, so we walk every
-        // interpreter thread state and dump each one's live stack, flagging the
-        // crashing thread only if it happens to be a Python thread.
-        PyThreadState* crashing = ::PyGILState_GetThisThreadState();
+        crashing = ::PyGILState_GetThisThreadState();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        crashing = nullptr;
+    }
+    if (crashing != nullptr) {
+        unsigned long long tid = 0;
+        __try { tid = ::PyThreadState_GetID(crashing); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        JAppend(out, "--- Python thread id=%llu  [CRASHING THREAD] ---\r\n", tid);
+        DumpPyThreadFrames(out, crashing);
+        JAppend(out, "\r\n");
+    } else {
+        JAppend(out,
+            "The faulting thread holds no Python state (native/GW thread). The Python\r\n"
+            "callback that was running, if any, is among the threads below.\r\n\r\n");
+    }
 
-        const char* header =
-            "Python context at crash - all interpreter threads (most recent call first).\r\n"
-            "The faulting OS thread may hold no Python state (e.g. the GW game thread);\r\n"
-            "the [CRASHING THREAD] marker appears only if it does. The callback that was\r\n"
-            "running is captured here even when the fault is on another thread.\r\n\r\n";
-        ::WriteFile(file, header, static_cast<DWORD>(strlen(header)), &written, nullptr);
-
-        char line[1400] = {};
-        int thread_count = 0;
-        int threads_with_frames = 0;
-
+    // 2) Every OTHER interpreter thread. The whole enumeration is guarded (the thread
+    //    list can be mutating at crash time) and EACH thread is guarded again, so a
+    //    live worker we cannot safely walk is skipped rather than aborting the dump.
+    int others = 0;
+    __try {
         for (PyInterpreterState* interp = ::PyInterpreterState_Head();
              interp != nullptr;
              interp = ::PyInterpreterState_Next(interp)) {
             for (PyThreadState* tstate = ::PyInterpreterState_ThreadHead(interp);
                  tstate != nullptr;
                  tstate = ::PyThreadState_Next(tstate)) {
-                ++thread_count;
-                const int is_crashing = (crashing != nullptr && tstate == crashing) ? 1 : 0;
-                const unsigned long long tid = ::PyThreadState_GetID(tstate);
-
-                PyFrameObject* frame = ::PyThreadState_GetFrame(tstate);
-                if (frame == nullptr) {
-                    _snprintf_s(line, sizeof(line), _TRUNCATE,
-                        "--- Python thread id=%llu%s: no active frame ---\r\n",
-                        tid, is_crashing ? "  [CRASHING THREAD]" : "");
-                    ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+                if (tstate == crashing) {
                     continue;
                 }
-                ++threads_with_frames;
-                _snprintf_s(line, sizeof(line), _TRUNCATE,
-                    "--- Python thread id=%llu%s ---\r\n",
-                    tid, is_crashing ? "  [CRASHING THREAD]" : "");
-                ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
-
-                int depth = 0;
-                while (frame != nullptr && depth < 96) {
-                    PyCodeObject* code = ::PyFrame_GetCode(frame);
-                    const int lineno = ::PyFrame_GetLineNumber(frame);
-                    const char* fname = "<unknown>";
-                    const char* qual = "<unknown>";
-                    if (code != nullptr) {
-                        const char* f = ::PyUnicode_AsUTF8(code->co_filename);
-                        const char* q = ::PyUnicode_AsUTF8(code->co_qualname);
-                        if (f != nullptr) fname = f;
-                        if (q != nullptr) qual = q;
-                    }
-                    _snprintf_s(line, sizeof(line), _TRUNCATE, "#%02d %s:%d in %s\r\n", depth, fname, lineno, qual);
-                    ::WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
-
-                    // Strong refs from GetFrame/GetCode/GetBack are intentionally
-                    // leaked - never dealloc a Python object mid-crash.
-                    frame = ::PyFrame_GetBack(frame);
-                    ++depth;
+                ++others;
+                unsigned long long tid = 0;
+                __try { tid = ::PyThreadState_GetID(tstate); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                JAppend(out, "--- Python thread id=%llu ---\r\n", tid);
+                __try {
+                    DumpPyThreadFrames(out, tstate);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    JAppend(out, "  [thread capture faulted - skipped]\r\n");
                 }
-                ::WriteFile(file, "\r\n", 2, &written, nullptr);
+                JAppend(out, "\r\n");
             }
         }
-
-        if (thread_count == 0) {
-            const char* msg = "No Python interpreter thread states were enumerable at crash time.\r\n";
-            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
-        } else if (threads_with_frames == 0) {
-            const char* msg = "Python threads exist but none had an active frame at crash time.\r\n";
-            ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
-        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        const char* msg = "\r\n[python trace capture faulted - interpreter state was partially unreadable]\r\n";
-        ::WriteFile(file, msg, static_cast<DWORD>(strlen(msg)), &written, nullptr);
+        JAppend(out, "[thread enumeration faulted - list was mutating; partial results above]\r\n");
     }
-    ::CloseHandle(file);
+
+    if (crashing == nullptr && others == 0) {
+        JAppend(out, "No Python interpreter thread states were enumerable at crash time.\r\n");
+    }
+
+    WriteReportFile(pytrace_path, buffer, static_cast<size_t>(out.p - buffer));
 }
 
 void CrashHandler::WriteDump(EXCEPTION_POINTERS* info, const wchar_t* dmp_path, const char* comment) {
+    // A minidump needs a real file handle up front (it cannot be buffered), but it is
+    // only ever requested for genuine faults (panic/seh) and after the sidecar has
+    // already created the folder; create the folder on demand here too for safety.
+    if (s_last_report_dir[0]) {
+        MakeDirTree(s_last_report_dir);
+    }
     HANDLE file = ::CreateFileW(dmp_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return;

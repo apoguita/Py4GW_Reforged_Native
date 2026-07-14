@@ -251,6 +251,26 @@ void RemoveHooks() {
 
 }  // namespace
 
+const wchar_t* CreateEncodedTextLiteral(const wchar_t* text) {
+    if (!text) {
+        return nullptr;
+    }
+    if (!UiCreateEncodedText_Func) {
+        if (!ResolveCreateEncodedText()) {
+            return nullptr;
+        }
+        UiCreateEncodedText_Func = reinterpret_cast<UiCreateEncodedText_pt>(g_create_encoded_text_func);
+    }
+    // Prefer the trampoline (skips the title-override detour); fall back to the
+    // resolved entry when the hook is not installed.
+    const UiCreateEncodedText_pt fn = UiCreateEncodedText_Ret ? UiCreateEncodedText_Ret : UiCreateEncodedText_Func;
+    if (!fn) {
+        return nullptr;
+    }
+    const uint32_t handle = fn(8, 7, text, 0);  // style 8 / layout 7 = literal-text wrapper
+    return reinterpret_cast<const wchar_t*>(handle);
+}
+
 bool SetNextCreatedWindowTitle(const std::wstring& title) {
     if (title.empty()) {
         return false;

@@ -433,6 +433,7 @@ bool Initialize() {
             "PyDialog",
             "PyOverlay",
             "PyDXOverlay",
+            "PyWorldRender",
             "PyKeystroke",
             "PyMouse",
             "PyImGui",

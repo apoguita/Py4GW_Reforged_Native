@@ -102,6 +102,15 @@ uint32_t GetLastAppliedFrameId();
 std::wstring GetLastAppliedTitle();
 bool IsInstalled();
 
+// Build a game-encoded text string from literal UTF-16 `text` via the engine's
+// Ui_CreateEncodedText (style 8 / layout 7 = literal-text wrapper, the window-
+// title form). Returns the encoded wchar_t* (owned by the engine; do not free),
+// or nullptr if the encoder could not be resolved. Used to inject literal
+// CtlTextMl markup (e.g. <c=#RRGGBB>...</c>) that the game renders. Ensures the
+// encoder is resolved on first use; safe to call whether or not the title hook
+// is installed.
+const wchar_t* CreateEncodedTextLiteral(const wchar_t* text);
+
 }  // namespace title_hook
 
 }  // namespace GW::native_ui

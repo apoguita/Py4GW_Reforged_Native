@@ -7,102 +7,215 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace GW::Context { struct Item; }
 
 // AgentRecolor (legacy AgentTagColor, py_agent_tag_color.h; renamed on request)
 // ----------------------------------------------------------------------------
-// Recolors agent overhead name tags (and the shared consider/target ring) by
-// detouring the native color RESOLVER the game itself re-reads on every agent
-// update. RE closeout: docs/RE/name_tag_color_reverse_engineering.md (legacy).
+// One class owning ALL overhead name-tag recoloring: living agents, gadgets,
+// and ground items. Each category uses a different native mechanism, so the
+// class installs three detours and holds three rule stores, but it is a single
+// unit exposed as the single PyAgentRecolor module.
 //
-// Hook target: the RESOLVER GetConsiderColor (EXE FUN_007f02e0, __thiscall) —
-// what the game's name-tag path (CCharAgent::GetTextData) and the consider ring
-// call directly with the CCharAgent view pointer. The color is a 4-byte ARGB
-// written THROUGH the out pointer. The detour runs the original first, recovers
-// the agent id from view+0x2C, then overwrites *out for agents matching a rule.
-// Color is ARGB 0xAARRGGBB (opaque red = 0xFFFF0000).
+//  - Living agents (players/NPCs/enemies): detour the color RESOLVER
+//    GetConsiderColor (EXE FUN_007f02e0). The game re-reads it on every agent
+//    update; the detour overwrites *out for matching agents. id at view+0x2C.
+//  - Gadgets (signposts/chests/shrines/collectors): detour
+//    CGadgetAgent::GetTextData (EXE FUN_007f9950); overwrite the two Color4b
+//    words (TextData +0x08/+0x0C) it writes. id at view+0x2C.
+//  - Ground items: detour CItemAgent::GetTextData (EXE FUN_007fa6a0); for a
+//    matching item set the base Color4b and strip the encoded name's leading
+//    color control word so the base color governs (arbitrary per-item RGB).
+//    item id at view+0xC8, agent id at view+0x2C.
 //
-// NOTE: the id-addressable wrapper AvCharGetConsiderColor (FUN_007d9cf0) is NOT
-// on the game's render path — hooking it recolors nothing. We only use it as a
-// build-portable ANCHOR: the "agent" assertion at AvApi.cpp:0x1e9 ->
-// to_function_start gives the wrapper, whose body CALLs ManagerFindChar (+0x07)
-// and the resolver (+0x31); we derive both from there and hook the resolver.
+// Colors are ARGB 0xAARRGGBB (opaque red = 0xFFFF0000).
+// RE: docs/RE/name_tag_color_reverse_engineering.md (agents) and
+//     docs/RE/item_gadget_recolor_reverse_engineering.md (items/gadgets).
 // Scan inputs live in offsets/agent_recolor.json.
 
 namespace GW::agent_recolor {
 
+using Item = GW::Context::Item;
+
 bool Initialize();
 void Shutdown();
 
-// GetConsiderColor RESOLVER (EXE FUN_007f02e0), __thiscall, emulated as
-// __fastcall so a free-function detour matches the thiscall ABI: `this`
-// arrives in ECX (fastcall arg 1), EDX is unused (fastcall arg 2), and the two
-// stack args (out, flag) follow. RET 8 <-> fastcall cleans 8.
+// GetConsiderColor RESOLVER (EXE FUN_007f02e0), __thiscall emulated as
+// __fastcall: `this` in ECX, unused EDX, then stack args (out, flag). RET 8.
 using ResolverFn = uint32_t*(__fastcall*)(void* view, void* edx, uint32_t* out, int flag);
 // ManagerFindChar (EXE FUN_007fc920), __cdecl: agent_id -> CCharAgent view or null.
 using FindCharFn = void*(__cdecl*)(uint32_t agent_id);
+// CGadgetAgent/CItemAgent::GetTextData (EXE FUN_007f9950 / FUN_007fa6a0),
+// __thiscall emulated as __fastcall. Trailing args are TextData* (0x14 bytes).
+using TextDataFn = void(__fastcall*)(void* view, void* edx, uint32_t* name_tag, uint32_t* sub_text);
 
 // Module-owned resolved symbols.
-extern ResolverFn g_resolver;           // hooked function (-> detour)
-extern ResolverFn g_resolver_original;  // trampoline -> original behavior
-extern FindCharFn g_find_char;          // id -> view (reads + null guard)
+extern ResolverFn g_resolver;
+extern ResolverFn g_resolver_original;
+extern FindCharFn g_find_char;
+extern TextDataFn g_char_get_text_data;
+extern TextDataFn g_char_get_text_data_original;
+extern TextDataFn g_gadget_get_text_data;
+extern TextDataFn g_gadget_get_text_data_original;
+extern TextDataFn g_item_get_text_data;
+extern TextDataFn g_item_get_text_data_original;
 
-// Module-owned resolvers (bodies in agent_recolor_patterns.cpp). Both derive
-// from the AvCharGetConsiderColor wrapper anchor declared in
-// offsets/agent_recolor.json ("agent_recolor.find_char_func" and
-// "agent_recolor.consider_color_resolver_func").
+// Resolvers (bodies in agent_recolor_patterns.cpp; inputs in the JSON).
 bool ResolveFindCharFunction();
 bool ResolveConsiderColorResolver();
+bool ResolveCharGetTextData();
+bool ResolveGadgetGetTextData();
+bool ResolveItemGetTextData();
 
 class AgentRecolor {
 public:
     struct Diagnostics {
         bool initialized = false;
-        bool hook_installed = false;
-        bool enabled = false;
-        uint32_t resolver_calls_seen = 0;   // resolver calls observed while enabled
-        uint32_t agent_rule_hits = 0;       // per-agent overrides applied
-        uint32_t allegiance_rule_hits = 0;  // per-allegiance overrides applied
+        // per-category hook install + enable state
+        bool agent_hook_installed = false;
+        bool char_tag_hook_installed = false;
+        bool gadget_hook_installed = false;
+        bool item_hook_installed = false;
+        bool agent_enabled = false;
+        bool gadget_enabled = false;
+        bool item_enabled = false;
+        // agent counters
+        uint32_t resolver_calls_seen = 0;
+        uint32_t agent_rule_hits = 0;
+        uint32_t allegiance_rule_hits = 0;
         uint32_t last_agent_id = 0;
-        uint32_t last_color = 0;            // last color returned by the detour (ARGB)
+        uint32_t last_agent_color = 0;
+        // gadget counters
+        uint32_t gadget_calls_seen = 0;
+        uint32_t gadget_rule_hits = 0;
+        uint32_t gadget_all_hits = 0;
+        uint32_t last_gadget_id = 0;
+        uint32_t last_gadget_color = 0;
+        // item counters
+        uint32_t item_calls_seen = 0;
+        uint32_t item_rule_hits = 0;
+        uint32_t last_item_id = 0;
+        uint32_t last_item_model = 0;
+        uint32_t last_item_color = 0;
+        uint32_t item_name_cache_size = 0;
     };
 
     static AgentRecolor& Instance();
 
-    // Resolve + install the resolver detour. Safe to call once at DLL init.
-    void Initialize();
+    void Initialize();   // resolve + install all three detours (safe once at DLL init)
     void Terminate();
 
+    // ===== Living agents =====
     void Enable();
     void Disable();
     bool IsEnabled() const;
     bool IsHookInstalled() const;
-
-    // Rule store. Precedence: per-agent > per-allegiance > game default.
-    // Colors are ARGB 0xAARRGGBB.
     void SetAgentColor(uint32_t agent_id, uint32_t argb);
     bool RemoveAgentColor(uint32_t agent_id);
-    void SetAllegianceColor(int allegiance, uint32_t argb);   // allegiance 1..6
+    void SetAllegianceColor(int allegiance, uint32_t argb);   // 1..6
     bool RemoveAllegianceColor(int allegiance);
     void ClearRules();
-
     std::map<uint32_t, uint32_t> GetAgentRules() const;
     std::map<int, uint32_t> GetAllegianceRules() const;
-
-    // Read-only: the color the game currently computes for `agent_id` (ARGB),
-    // by calling the ORIGINAL (un-overridden) resolver. Returns 0 if the
-    // resolver was not resolved or the agent is invalid.
     uint32_t ReadConsiderColor(uint32_t agent_id);
+    uint32_t ApplyAgentOverride(uint32_t agent_id, uint32_t resolved_color);
+    // Returns the agent's rule color (with alpha) if enabled and a rule matches;
+    // used by the CCharAgent::GetTextData hook to apply fade/hide to the name
+    // tag (the resolver alone cannot: the game forces the dim alpha to 0xC0 and
+    // cannot blank the tag). Game-thread.
+    bool AgentRuleColor(uint32_t agent_id, uint32_t* out_argb);
+    bool CharIsHookInstalled() const;
 
+    // ===== Gadgets =====
+    void GadgetEnable();
+    void GadgetDisable();
+    bool GadgetIsEnabled() const;
+    bool GadgetIsHookInstalled() const;
+    void SetGadgetColor(uint32_t agent_id, uint32_t argb);
+    bool RemoveGadgetColor(uint32_t agent_id);
+    void SetAllGadgetColor(uint32_t argb);
+    void ClearAllGadgetColor();
+    void GadgetClearRules();
+    std::map<uint32_t, uint32_t> GetGadgetRules() const;
+    bool HasAllGadgetColor() const;
+    uint32_t GetAllGadgetColor() const;
+    uint32_t ApplyGadgetOverride(uint32_t agent_id, uint32_t resolved_color);
+
+    // ===== Ground items (rich filter store) =====
+    // Precedence: agent_id > item_id > model_id > name > type > rarity.
+    void ItemEnable();
+    void ItemDisable();
+    bool ItemIsEnabled() const;
+    bool ItemIsHookInstalled() const;
+    void SetItemAgentColor(uint32_t agent_id, uint32_t argb);
+    bool RemoveItemAgentColor(uint32_t agent_id);
+    void SetItemIdColor(uint32_t item_id, uint32_t argb);
+    bool RemoveItemIdColor(uint32_t item_id);
+    void SetItemModelColor(uint32_t model_id, uint32_t argb);
+    bool RemoveItemModelColor(uint32_t model_id);
+    void SetItemTypeColor(int item_type, uint32_t argb);
+    bool RemoveItemTypeColor(int item_type);
+    void SetItemRarityColor(int rarity, uint32_t argb);   // 0..4
+    bool RemoveItemRarityColor(int rarity);
+    void SetItemNameColor(const std::wstring& substring, uint32_t argb);  // case-insensitive
+    bool RemoveItemNameColor(const std::wstring& substring);
+    void ItemClearRules();
+    std::map<uint32_t, uint32_t> GetItemAgentRules() const;
+    std::map<uint32_t, uint32_t> GetItemIdRules() const;
+    std::map<uint32_t, uint32_t> GetItemModelRules() const;
+    std::map<int, uint32_t> GetItemTypeRules() const;
+    std::map<int, uint32_t> GetItemRarityRules() const;
+    std::vector<std::pair<std::wstring, uint32_t>> GetItemNameRules() const;
+    void OnItemGetTextData(void* view, uint32_t* name_tag);
+
+    // ===== Shared =====
+    void ClearAllRules();  // all three categories
     Diagnostics GetDiagnostics() const;
     void ResetDiagnostics();
 
-    // Detour entry point (called from the installed hook). Returns the color to
-    // write to *out for this agent (default unchanged when disabled/no rule).
-    uint32_t ApplyOverride(uint32_t agent_id, uint32_t resolved_color);
-
-    struct RuleSnapshot {
+    // Snapshots (copy-on-write; read lock-free from detours).
+    struct AgentSnapshot {
         std::map<uint32_t, uint32_t> agent_rules;
         std::map<int, uint32_t> allegiance_rules;
+    };
+    struct GadgetSnapshot {
+        std::map<uint32_t, uint32_t> gadget_rules;
+        bool has_all = false;
+        uint32_t all_color = 0;
+    };
+    struct ItemSnapshot {
+        std::map<uint32_t, uint32_t> agent_rules;
+        std::map<uint32_t, uint32_t> item_rules;
+        std::map<uint32_t, uint32_t> model_rules;
+        std::map<int, uint32_t> type_rules;
+        std::map<int, uint32_t> rarity_rules;
+        std::vector<std::pair<std::wstring, uint32_t>> name_rules;  // lowercased
+        bool any() const {
+            return !agent_rules.empty() || !item_rules.empty() || !model_rules.empty() ||
+                   !type_rules.empty() || !rarity_rules.empty() || !name_rules.empty();
+        }
+    };
+
+    struct NameEntry {
+        std::wstring raw;      // decoded name (may contain <c=@..> markup)
+        std::wstring lower;    // lowercased raw, for case-insensitive name matching
+        std::wstring display;  // markup-stripped proper-case name, for true-color rebuild
+        bool requested = false;
+    };
+
+    // Recolored item-name strings kept in OUR OWN stable storage (the engine's
+    // Ui_CreateEncodedText returns a shared temp buffer recycled by other UI
+    // text, so we must copy). Both members are set at most ONCE and never
+    // reassigned, so any pointer we hand the game (`.c_str()`) stays valid for
+    // the process lifetime - even across the palette->true-color upgrade (we
+    // return `truecolor` once ready but keep `palette` alive for any lingering
+    // holder, so nothing is ever freed under the game).
+    struct ColorEntry {
+        std::wstring palette;    // fallback opcode-swap copy (set once)
+        std::wstring truecolor;  // arbitrary-RGB <c=#..> form (set once, when ready)
     };
 
 private:
@@ -110,22 +223,72 @@ private:
     AgentRecolor(const AgentRecolor&) = delete;
     AgentRecolor& operator=(const AgentRecolor&) = delete;
 
-    void RebuildSnapshotLocked();
+    void RebuildAgentSnapshotLocked();
+    void RebuildGadgetSnapshotLocked();
+    void RebuildItemSnapshotLocked();
+    // Returns the resolved name entry (raw/lower/display) for `model_id`, or
+    // nullptr if not yet resolved (a decode is requested on first sight).
+    const NameEntry* ResolveItemName(uint32_t model_id, const Item* item);
+    // Returns a STABLE recolored encoded name for (model_id, argb): the true
+    // arbitrary-RGB `<c=#RRGGBB>name</c>` once the name resolves, else a palette
+    // opcode-swap copy of `game_name_src`. nullptr if nothing can be built
+    // (no model, or source has no color opcode to swap). Game-thread only.
+    const wchar_t* GetItemColorString(uint32_t model_id, uint32_t argb, const Item* item,
+                                      const wchar_t* game_name_src);
 
-    mutable std::mutex rules_mutex_;
+    mutable std::mutex mutex_;
+
+    // agent rules
     std::map<uint32_t, uint32_t> agent_rules_;
     std::map<int, uint32_t> allegiance_rules_;
-    std::shared_ptr<const RuleSnapshot> snapshot_;
+    std::shared_ptr<const AgentSnapshot> agent_snapshot_;
+
+    // gadget rules
+    std::map<uint32_t, uint32_t> gadget_rules_;
+    bool gadget_has_all_ = false;
+    uint32_t gadget_all_color_ = 0;
+    std::shared_ptr<const GadgetSnapshot> gadget_snapshot_;
+
+    // item rules
+    std::map<uint32_t, uint32_t> item_agent_rules_;
+    std::map<uint32_t, uint32_t> item_id_rules_;
+    std::map<uint32_t, uint32_t> item_model_rules_;
+    std::map<int, uint32_t> item_type_rules_;
+    std::map<int, uint32_t> item_rarity_rules_;
+    std::vector<std::pair<std::wstring, uint32_t>> item_name_rules_;  // lowercased
+    std::shared_ptr<const ItemSnapshot> item_snapshot_;
+
+    // item name cache (game-thread only)
+    std::map<uint32_t, NameEntry> item_name_cache_;
+    // (model_id<<32 | argb) -> stable recolored encoded name (game-thread only)
+    std::map<uint64_t, ColorEntry> item_color_cache_;
 
     std::atomic<bool> initialized_{false};
-    std::atomic<bool> enabled_{false};
-    std::atomic<bool> hook_installed_{false};
+    std::atomic<bool> agent_enabled_{false};
+    std::atomic<bool> gadget_enabled_{false};
+    std::atomic<bool> item_enabled_{false};
+    std::atomic<bool> agent_hook_installed_{false};
+    std::atomic<bool> char_tag_hook_installed_{false};
+    std::atomic<bool> gadget_hook_installed_{false};
+    std::atomic<bool> item_hook_installed_{false};
 
+    // diagnostics
     std::atomic<uint32_t> diag_resolver_calls_{0};
     std::atomic<uint32_t> diag_agent_hits_{0};
     std::atomic<uint32_t> diag_allegiance_hits_{0};
     std::atomic<uint32_t> diag_last_agent_{0};
-    std::atomic<uint32_t> diag_last_color_{0};
+    std::atomic<uint32_t> diag_last_agent_color_{0};
+    std::atomic<uint32_t> diag_gadget_calls_{0};
+    std::atomic<uint32_t> diag_gadget_hits_{0};
+    std::atomic<uint32_t> diag_gadget_all_hits_{0};
+    std::atomic<uint32_t> diag_last_gadget_{0};
+    std::atomic<uint32_t> diag_last_gadget_color_{0};
+    std::atomic<uint32_t> diag_item_calls_{0};
+    std::atomic<uint32_t> diag_item_hits_{0};
+    std::atomic<uint32_t> diag_last_item_{0};
+    std::atomic<uint32_t> diag_last_item_model_{0};
+    std::atomic<uint32_t> diag_last_item_color_{0};
+    std::atomic<uint32_t> diag_item_name_cache_size_{0};
 };
 
 }  // namespace GW::agent_recolor

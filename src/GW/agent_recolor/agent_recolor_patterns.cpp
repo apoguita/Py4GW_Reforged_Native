@@ -26,4 +26,31 @@ bool ResolveConsiderColorResolver() {
         "agent_recolor");
 }
 
+bool ResolveCharGetTextData() {
+    CrashContextScope context("startup", "agent_recolor", "resolve_char_get_text_data");
+    PY4GW::Patterns::Resolve("agent_recolor.char_get_text_data_func", &g_char_get_text_data);
+    return Logger::AssertAddress(
+        "CCharAgent_GetTextData_Func",
+        reinterpret_cast<uintptr_t>(g_char_get_text_data),
+        "agent_recolor");
+}
+
+bool ResolveGadgetGetTextData() {
+    CrashContextScope context("startup", "agent_recolor", "resolve_gadget_get_text_data");
+    PY4GW::Patterns::Resolve("agent_recolor.gadget_get_text_data_func", &g_gadget_get_text_data);
+    return Logger::AssertAddress(
+        "CGadgetAgent_GetTextData_Func",
+        reinterpret_cast<uintptr_t>(g_gadget_get_text_data),
+        "agent_recolor");
+}
+
+bool ResolveItemGetTextData() {
+    CrashContextScope context("startup", "agent_recolor", "resolve_item_get_text_data");
+    PY4GW::Patterns::Resolve("agent_recolor.item_get_text_data_func", &g_item_get_text_data);
+    return Logger::AssertAddress(
+        "CItemAgent_GetTextData_Func",
+        reinterpret_cast<uintptr_t>(g_item_get_text_data),
+        "agent_recolor");
+}
+
 }  // namespace GW::agent_recolor

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,66 @@ std::wstring Widen(const std::string& utf8) {
     std::wstring wide(static_cast<size_t>(count), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), wide.data(), count);
     return wide;
+}
+
+// Runtime-tunable occlusion/depth parameters used by Setup3DView. Exposed via
+// DXOverlay::SetOcclusionTuning so the exact depth convention (near/far, compare
+// func, reversed-Z) can be dialed in live in-game instead of guessed blind.
+float g_occ_near = 48000.0f / 1024.0f;   // 46.875
+float g_occ_far = 48000.0f;
+int g_occ_zfunc = D3DCMP_LESSEQUAL;      // D3DCMPFUNC value
+bool g_occ_reverse_z = false;            // swap near/far in the projection
+
+// --- shader-based world draw (GameWorldRenderer approach) ---
+// GW renders the world with programmable shaders into an HDR buffer, so fixed-
+// function draws land wrong (color/blend artifacts). Draw colored geometry with a
+// tiny shader that transforms by view (c0) / projection (c4), matching GWToolbox.
+IDirect3DVertexShader9* g_world_vs = nullptr;
+IDirect3DPixelShader9* g_world_ps = nullptr;
+IDirect3DDevice9* g_world_shader_device = nullptr;
+
+bool EnsureWorldShaders(IDirect3DDevice9* device) {
+    if (g_world_shader_device != device) {
+        if (g_world_vs) { g_world_vs->Release(); g_world_vs = nullptr; }
+        if (g_world_ps) { g_world_ps->Release(); g_world_ps = nullptr; }
+        g_world_shader_device = device;
+    }
+    if (g_world_vs && g_world_ps) return true;
+
+    static const char vs_src[] =
+        "float4x4 gView : register(c0);\n"
+        "float4x4 gProj : register(c4);\n"
+        "struct VSIn  { float4 pos : POSITION; float4 col : COLOR0; };\n"
+        "struct VSOut { float4 pos : POSITION; float4 col : COLOR0; };\n"
+        "VSOut main(VSIn i){ VSOut o; float4 v = mul(i.pos, gView);"
+        " o.pos = mul(v, gProj); o.col = i.col; return o; }\n";
+    static const char ps_src[] =
+        "struct PSIn { float4 col : COLOR0; };\n"
+        "float4 main(PSIn i) : COLOR0 { return i.col; }\n";
+
+    ID3DBlob* blob = nullptr;
+    ID3DBlob* err = nullptr;
+    if (SUCCEEDED(D3DCompile(vs_src, sizeof(vs_src) - 1, nullptr, nullptr, nullptr,
+                             "main", "vs_3_0", 0, 0, &blob, &err)) && blob) {
+        device->CreateVertexShader(static_cast<const DWORD*>(blob->GetBufferPointer()), &g_world_vs);
+    }
+    if (blob) { blob->Release(); blob = nullptr; }
+    if (err) { err->Release(); err = nullptr; }
+    if (SUCCEEDED(D3DCompile(ps_src, sizeof(ps_src) - 1, nullptr, nullptr, nullptr,
+                             "main", "ps_3_0", 0, 0, &blob, &err)) && blob) {
+        device->CreatePixelShader(static_cast<const DWORD*>(blob->GetBufferPointer()), &g_world_ps);
+    }
+    if (blob) blob->Release();
+    if (err) err->Release();
+    return g_world_vs != nullptr && g_world_ps != nullptr;
+}
+
+// Hard map-validity gate for 3D draws: only draw in a fully loaded, non-loading
+// map. Otherwise there is no valid scene/depth and touching D3D during a map
+// transition can hang the client.
+bool MapValidForDraw() {
+    return GW::map::GetIsMapLoaded() &&
+           GW::map::GetInstanceType() != GW::Constants::InstanceType::Loading;
 }
 
 }  // namespace
@@ -714,6 +775,94 @@ void DXOverlay::DrawPolyFilled(GW::Vec2f center, float radius, D3DCOLOR color, i
     device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, segments, verts.data(), sizeof(D3DVertex));
 }
 
+void DXOverlay::SetOcclusionTuning(float near_z, float far_z, int zfunc, bool reverse_z) {
+    if (near_z > 0.0f) g_occ_near = near_z;
+    if (far_z > 0.0f) g_occ_far = far_z;
+    if (zfunc > 0) g_occ_zfunc = zfunc;
+    g_occ_reverse_z = reverse_z;
+}
+
+// Reports the actual render-target / depth-stencil / viewport state at draw
+// time. If the depth-stencil is absent, a different size than the render
+// target, a different MSAA type, or the viewport MinZ/MaxZ is not 0..1, then
+// occlusion cannot work from this hook point regardless of the projection.
+std::string DXOverlay::GetDepthDiagnostics() {
+    IDirect3DDevice9* device = GW::render::GetDevice();
+    if (!device) return "no device";
+
+    IDirect3DSurface9* rt = nullptr;
+    IDirect3DSurface9* ds = nullptr;
+    D3DSURFACE_DESC rt_desc = {};
+    D3DSURFACE_DESC ds_desc = {};
+    D3DVIEWPORT9 vp = {};
+    device->GetViewport(&vp);
+
+    const bool have_rt = SUCCEEDED(device->GetRenderTarget(0, &rt)) && rt;
+    if (have_rt) rt->GetDesc(&rt_desc);
+    const bool have_ds = SUCCEEDED(device->GetDepthStencilSurface(&ds)) && ds;
+    if (have_ds) ds->GetDesc(&ds_desc);
+
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+        "RT %ux%u fmt=%d ms=%d | DS %s %ux%u fmt=%d ms=%d | VP %ux%u minZ=%.3f maxZ=%.3f",
+        rt_desc.Width, rt_desc.Height, static_cast<int>(rt_desc.Format), static_cast<int>(rt_desc.MultiSampleType),
+        have_ds ? "OK" : "NONE",
+        ds_desc.Width, ds_desc.Height, static_cast<int>(ds_desc.Format), static_cast<int>(ds_desc.MultiSampleType),
+        vp.Width, vp.Height, vp.MinZ, vp.MaxZ);
+
+    if (rt) rt->Release();
+    if (ds) ds->Release();
+    return buf;
+}
+
+// Self-contained depth-hardware test, independent of GW and the projection.
+// Clears depth to far (1.0), then draws pre-transformed (XYZRHW) quads with
+// explicit depth values:
+//   1) RED  quad at z=0.8 (far)
+//   2) GREEN quad at z=0.3 (near), overlapping red   -> should COVER red
+//   3) BLUE quad at z=0.8 (far),  overlapping green  -> should be HIDDEN by green
+// If green covers red AND blue is hidden behind green, our depth read+write path
+// works perfectly and any occlusion failure is due to GW's scene depth not being
+// in the bound buffer. If blue draws over green, the depth path itself is broken.
+void DXOverlay::DrawSelfOcclusionTest() {
+    IDirect3DDevice9* device = GW::render::GetDevice();
+    if (!device) return;
+
+    device->SetPixelShader(nullptr);
+    device->SetVertexShader(nullptr);
+    device->SetTexture(0, nullptr);
+    device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+
+    // Isolate our own writes: clear depth only (keep the color/scene intact).
+    device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+
+    D3DVIEWPORT9 vp;
+    device->GetViewport(&vp);
+    const float w = static_cast<float>(vp.Width);
+    const float h = static_cast<float>(vp.Height);
+
+    struct V { float x, y, z, rhw; D3DCOLOR c; };
+    auto quad = [device](float x0, float y0, float x1, float y1, float z, D3DCOLOR c) {
+        V v[4] = {
+            { x0, y0, z, 1.0f, c },
+            { x1, y0, z, 1.0f, c },
+            { x0, y1, z, 1.0f, c },
+            { x1, y1, z, 1.0f, c },
+        };
+        device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(V));
+    };
+
+    quad(w * 0.20f, h * 0.20f, w * 0.60f, h * 0.80f, 0.8f, 0xFFFF0000); // red  far
+    quad(w * 0.40f, h * 0.35f, w * 0.80f, h * 0.65f, 0.3f, 0xFF00FF00); // green near
+    quad(w * 0.50f, h * 0.45f, w * 0.90f, h * 0.75f, 0.8f, 0xFF0000FF); // blue far
+}
+
 void DXOverlay::Setup3DView() {
     IDirect3DDevice9* device = GW::render::GetDevice();
     if (!device) return;
@@ -723,29 +872,42 @@ void DXOverlay::Setup3DView() {
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     device->SetRenderState(D3DRS_AMBIENT, 0xFFFFFFFF);
 
-    // Depth testing
+    // Depth testing (compare func is runtime-tunable for reversed-Z buffers).
+    // ZWRITE off: test against GW's world depth but do not write, so overlay
+    // draws never pollute the depth buffer for GW's later HUD pass.
     device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
-    device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_ZFUNC, static_cast<DWORD>(g_occ_zfunc));
 
     auto* cam = GW::Context::GetCamera();
     if (!cam) return;
 
-    // Right-handed camera vectors (flip Z). Legacy used D3DXMatrix* helpers;
-    // DirectXMath is the drop-in replacement (same row-major layout).
-    XMFLOAT3 eye(cam->position.x, cam->position.y, -cam->position.z);
-    XMFLOAT3 at(cam->look_at_target.x, cam->look_at_target.y, -cam->look_at_target.z);
-    XMFLOAT3 up(0.0f, 0.0f, 1.0f); // RH: Z+ is up
+    // Match the proven Overlay::WorldToScreen pipeline exactly: LEFT-handed
+    // view+projection with up=(0,0,-1) and NO world-Z flip. The old code used a
+    // right-handed setup whose depth curve did not match GW's D3D depth buffer,
+    // which broke occlusion (z-fighting) after the GW renderer update.
+    //
+    // Every Draw*3D call site still supplies vertices with -z (legacy
+    // convention), so instead of touching all of them we fold a Z-flip into the
+    // view matrix: view = Scale(1,1,-1) * LookAtLH(...). Then a supplied
+    // (x, y, -Zw) transforms identically to WorldToScreen's (x, y, +Zw).
+    XMFLOAT3 eye(cam->position.x, cam->position.y, cam->position.z);
+    XMFLOAT3 at(cam->look_at_target.x, cam->look_at_target.y, cam->look_at_target.z);
+    XMFLOAT3 up(0.0f, 0.0f, -1.0f);
 
-    XMMATRIX view = XMMatrixLookAtRH(XMLoadFloat3(&eye), XMLoadFloat3(&at), XMLoadFloat3(&up));
+    XMMATRIX view_lh = XMMatrixLookAtLH(XMLoadFloat3(&eye), XMLoadFloat3(&at), XMLoadFloat3(&up));
+    XMMATRIX z_flip = XMMatrixScaling(1.0f, 1.0f, -1.0f);
+    XMMATRIX view = z_flip * view_lh;  // apply the vertex Z-flip, then the view
     device->SetTransform(D3DTS_VIEW, reinterpret_cast<const D3DMATRIX*>(&view));
 
     float fov = GW::render::GetFieldOfView();
     float aspect = static_cast<float>(GW::render::GetViewportWidth()) / static_cast<float>(GW::render::GetViewportHeight());
-    float near_plane = 48000.0f / 1024.0f;
-    float far_plane = 48000.0f;
+    // Near/far are runtime-tunable. reverse_z swaps them so far maps to 0 and
+    // near to 1 (matches a reversed-Z depth buffer; pair with ZFUNC GREATER*).
+    float near_plane = g_occ_reverse_z ? g_occ_far : g_occ_near;
+    float far_plane = g_occ_reverse_z ? g_occ_near : g_occ_far;
 
-    XMMATRIX proj = XMMatrixPerspectiveFovRH(fov, aspect, near_plane, far_plane);
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, near_plane, far_plane);
     device->SetTransform(D3DTS_PROJECTION, reinterpret_cast<const D3DMATRIX*>(&proj));
 
     // Set identity world transform
@@ -753,9 +915,85 @@ void DXOverlay::Setup3DView() {
     device->SetTransform(D3DTS_WORLD, reinterpret_cast<const D3DMATRIX*>(&identity));
 }
 
+void DXOverlay::DrawBeam3D(float x, float y, float z, float height, float radius, uint32_t argb,
+                          float top_alpha, bool additive) {
+    IDirect3DDevice9* device = GW::render::GetDevice();
+    if (!device || !MapValidForDraw()) return;
+    if (!EnsureWorldShaders(device)) return;
+
+    auto* cam = GW::Context::GetCamera();
+    if (!cam) return;
+
+    // Same LH view/projection as WorldToScreen; uploaded to the shader as
+    // constants (transposed for HLSL column-major registers).
+    XMFLOAT3 eye(cam->position.x, cam->position.y, cam->position.z);
+    XMFLOAT3 at(cam->look_at_target.x, cam->look_at_target.y, cam->look_at_target.z);
+    XMFLOAT3 up(0.0f, 0.0f, -1.0f);
+    XMMATRIX view = XMMatrixLookAtLH(XMLoadFloat3(&eye), XMLoadFloat3(&at), XMLoadFloat3(&up));
+
+    const float fov = GW::render::GetFieldOfView();
+    const float aspect = static_cast<float>(GW::render::GetViewportWidth()) /
+                         static_cast<float>(GW::render::GetViewportHeight());
+    const float near_plane = g_occ_reverse_z ? g_occ_far : g_occ_near;
+    const float far_plane = g_occ_reverse_z ? g_occ_near : g_occ_far;
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, near_plane, far_plane);
+
+    XMMATRIX view_t = XMMatrixTranspose(view);
+    XMMATRIX proj_t = XMMatrixTranspose(proj);
+
+    device->SetVertexShader(g_world_vs);
+    device->SetPixelShader(g_world_ps);
+    device->SetVertexShaderConstantF(0, reinterpret_cast<const float*>(&view_t), 4);
+    device->SetVertexShaderConstantF(4, reinterpret_cast<const float*>(&proj_t), 4);
+    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    device->SetTexture(0, nullptr);
+
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);            // test only, don't write
+    device->SetRenderState(D3DRS_ZFUNC, static_cast<DWORD>(g_occ_zfunc));
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    device->SetRenderState(D3DRS_DESTBLEND,
+                           additive ? D3DBLEND_ONE : D3DBLEND_INVSRCALPHA);
+
+    // Base intensity from argb's alpha; top fades to top_alpha * base. up = -z.
+    const uint32_t base_a = (argb >> 24) & 0xFFu;
+    float ta = top_alpha < 0.0f ? 0.0f : (top_alpha > 1.0f ? 1.0f : top_alpha);
+    uint32_t top_a = static_cast<uint32_t>(static_cast<float>(base_a) * ta);
+    if (top_a > 255u) top_a = 255u;
+    const D3DCOLOR base = argb;
+    const D3DCOLOR top = (top_a << 24) | (argb & 0x00FFFFFFu);
+    const float top_z = z - height;
+    const float r = radius;
+
+    struct BeamVertex { float px, py, pz; D3DCOLOR c; };
+    // Two crossed vertical quads so the beam reads from any camera angle.
+    BeamVertex q1[4] = {
+        { x - r, y, z,     base },
+        { x + r, y, z,     base },
+        { x - r, y, top_z, top },
+        { x + r, y, top_z, top },
+    };
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q1, sizeof(BeamVertex));
+
+    BeamVertex q2[4] = {
+        { x, y - r, z,     base },
+        { x, y + r, z,     base },
+        { x, y - r, top_z, top },
+        { x, y + r, top_z, top },
+    };
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q2, sizeof(BeamVertex));
+
+    device->SetVertexShader(nullptr);
+    device->SetPixelShader(nullptr);
+}
+
 void DXOverlay::DrawLine3D(GW::Vec3f from, GW::Vec3f to, D3DCOLOR color, bool use_occlusion, int segments, float floor_offset) {
     IDirect3DDevice9* device = GW::render::GetDevice();
-    if (!device) return;
+    if (!device || !MapValidForDraw()) return;
 
     Setup3DView();
 
@@ -810,7 +1048,7 @@ void DXOverlay::DrawTriangle3D(GW::Vec3f p1, GW::Vec3f p2, GW::Vec3f p3, D3DCOLO
 
 void DXOverlay::DrawTriangleFilled3D(GW::Vec3f p1, GW::Vec3f p2, GW::Vec3f p3, D3DCOLOR color, bool use_occlusion, int segments, float floor_offset) {
     IDirect3DDevice9* device = GW::render::GetDevice();
-    if (!device) return;
+    if (!device || !MapValidForDraw()) return;
     Setup3DView();
     if (!use_occlusion) {
         device->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -891,7 +1129,7 @@ void DXOverlay::DrawQuadFilled3D(GW::Vec3f p1, GW::Vec3f p2, GW::Vec3f p3, GW::V
 // 'segments' = per-edge snapping subdivisions.
 void DXOverlay::DrawPoly3D(GW::Vec3f center, float radius, D3DCOLOR color, int numSegments, bool autoZ, bool use_occlusion, int segments, float floor_offset) {
     IDirect3DDevice9* device = GW::render::GetDevice();
-    if (!device) return;
+    if (!device || !MapValidForDraw()) return;
     Setup3DView();
     if (!use_occlusion) {
         device->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -944,7 +1182,7 @@ void DXOverlay::DrawPoly3D(GW::Vec3f center, float radius, D3DCOLOR color, int n
 // ---------- POLY (filled, draped by triangulating each fan triangle and snapping per sub-tri) ----------
 void DXOverlay::DrawPolyFilled3D(GW::Vec3f center, float radius, D3DCOLOR color, int numSegments, bool autoZ, bool use_occlusion, int segments, float floor_offset) {
     IDirect3DDevice9* device = GW::render::GetDevice();
-    if (!device) return;
+    if (!device || !MapValidForDraw()) return;
     Setup3DView();
     if (!use_occlusion) {
         device->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -1120,6 +1358,7 @@ void DXOverlay::DrawTexture3D(const std::string& file_path, float world_pos_x, f
 
     LPDIRECT3DTEXTURE9 texture = GW::textures::TextureManager::Instance().GetTexture(Widen(file_path));
     if (!texture) return;
+    if (!MapValidForDraw()) return;
 
     Setup3DView();
 
@@ -1151,6 +1390,13 @@ void DXOverlay::DrawTexture3D(const std::string& file_path, float world_pos_x, f
     device->SetTexture(0, texture);
     device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, verts, sizeof(D3DTexturedVertex3D));
 
+    // Unbind the texture and drop back to a plain FVF. Without this the bound
+    // texture + TEX1 format leak into subsequent overlay/game draws and blank
+    // them out (these functions intentionally use no full state block, matching
+    // the other Draw*3D helpers).
+    device->SetTexture(0, nullptr);
+    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+
     if (!use_occlusion) {
         device->SetRenderState(D3DRS_ZENABLE, TRUE);
         device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -1169,6 +1415,7 @@ void DXOverlay::DrawQuadTextured3D(const std::string& file_path,
 
     LPDIRECT3DTEXTURE9 texture = GW::textures::TextureManager::Instance().GetTexture(Widen(file_path));
     if (!texture) return;
+    if (!MapValidForDraw()) return;
 
     Setup3DView();
 
@@ -1199,6 +1446,13 @@ void DXOverlay::DrawQuadTextured3D(const std::string& file_path,
     device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1 | D3DFVF_DIFFUSE);
     device->SetTexture(0, texture);
     device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, verts, sizeof(D3DTexturedVertex3D));
+
+    // Unbind the texture and drop back to a plain FVF. Without this the bound
+    // texture + TEX1 format leak into subsequent overlay/game draws and blank
+    // them out (these functions intentionally use no full state block, matching
+    // the other Draw*3D helpers).
+    device->SetTexture(0, nullptr);
+    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 
     if (!use_occlusion) {
         device->SetRenderState(D3DRS_ZENABLE, TRUE);

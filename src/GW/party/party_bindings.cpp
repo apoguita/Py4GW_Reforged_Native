@@ -88,7 +88,7 @@ struct HenchmanPartyMember {
 struct PartyTick {
     bool ticked = false;
     PartyTick() = default;
-    explicit PartyTick(bool t) : ticked(t) {}
+    PartyTick(bool t) : ticked(t) {}  // non-explicit: parity with legacy (allows `tick = false`)
     bool IsTicked() const { return ticked; }
     void SetTicked(bool t) { ticked = t; }
     void ToggleTicked() { ticked = !ticked; }
@@ -125,7 +125,7 @@ struct PyParty {
     bool is_party_defeated = false;
     bool is_party_loaded = false;
     bool is_party_leader = false;
-    bool tick = false;
+    PartyTick tick = false;  // parity with legacy py_party.h: PartyTick object, not bool
 
     PyParty() { GetContext(); }
     void ResetContext();

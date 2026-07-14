@@ -3,6 +3,7 @@
 #include "imgui/imgui_manager.h"
 
 #include "GW/render/render.h"
+#include "base/CrashHandler.h"
 #include "base/process_manager.h"
 #include "base/python_runtime.h"
 #include "base/logger.h"
@@ -140,6 +141,19 @@ bool RenderConsoleUiSafely(bool* request_shutdown) noexcept {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    // The user is closing the game window. Flag shutdown as early as possible - the
+    // instant the close message arrives - so the crash handler suppresses the
+    // teardown-order faults that follow (GW releasing D3D/other resources our hooks
+    // still touch) instead of writing spurious reports. This fires well before
+    // ExitProcess/LdrShutdownProcess, which the RtlDllShutdownInProgress gate cannot
+    // see yet. Runs before the g_imgui_initialized bail so it always takes effect.
+    // WM_CLOSE is the earliest signal; WM_DESTROY is the irreversible one (a WndProc
+    // never receives WM_QUIT). GW does not prompt/cancel on close, so latching here is
+    // safe - and NotifyShutdown only suppresses reports, it does not stop teardown.
+    if (message == WM_CLOSE || message == WM_DESTROY) {
+        CrashHandler::NotifyShutdown();
+    }
+
     static bool right_mouse_down = false;
     static bool cached_left = false;
     static bool cached_right = false;

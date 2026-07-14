@@ -51,6 +51,18 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         break;
     }
     case DLL_PROCESS_DETACH:
+        // Suppress crash reporting for the ENTIRE teardown, on BOTH unload paths.
+        // reserved != nullptr means the process is terminating (user closed the
+        // client): we deliberately skip the heavy Py4GW_Shutdown/Terminate under the
+        // loader lock, but the CRT still runs its onexit table afterwards - which
+        // destroys the callback registry (a static std::vector<PyCallback::Task>),
+        // and ~vector frees the py::function each Task holds. That touches a
+        // python313.dll which LdrShutdownProcess is already unloading, faulting in
+        // PyObject_GC_Del. That is expected exit-time teardown, not a real crash, so
+        // flag shutdown FIRST (a cheap InterlockedExchange, no Python/loader work) so
+        // OnException stops writing spurious crash folders for it. On the FreeLibrary
+        // path Py4GW_Shutdown calls NotifyShutdown again; it is idempotent.
+        CrashHandler::NotifyShutdown();
         AppendDetachMessage();
         if (reserved == nullptr) {
             Py4GW_Shutdown();

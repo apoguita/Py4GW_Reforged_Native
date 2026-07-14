@@ -259,7 +259,7 @@ uint64_t System::GetTickCount64() {
 }
 
 std::string System::GetCredits() {
-    return "Py4GW v3.0.0, Apoguita - 2024,2026";
+    return "Py4GW Reforged, Apoguita - 2024,2026";
 }
 
 std::string System::GetLicense() {
