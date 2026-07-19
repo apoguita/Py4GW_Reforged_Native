@@ -54,4 +54,7 @@ void register_io(py::module_& m);
 // markdown, memory_editor, anim, text_editor.
 void register_addons(py::module_& m);
 
+// ImPlot plotting library exposed as the PyImGui.implot submodule.
+void register_implot(py::module_& m);
+
 }  // namespace PY4GW::imgui_bindings

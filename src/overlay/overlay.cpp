@@ -771,7 +771,7 @@ void Overlay::DrawQuad(GW::Vec2f p1, GW::Vec2f p2, GW::Vec2f p3, GW::Vec2f p4, I
         ImVec2(p3.x, p3.y),
         ImVec2(p4.x, p4.y)
     };
-    drawList->AddPolyline(points, 4, color, true /* closed */, thickness);
+    drawList->AddPolyline(points, 4, color, thickness, ImDrawFlags_Closed);
 }
 
 void Overlay::DrawQuad3D(GW::Vec3f p1, GW::Vec3f p2, GW::Vec3f p3, GW::Vec3f p4, ImU32 color, float thickness) {
@@ -789,7 +789,7 @@ void Overlay::DrawQuad3D(GW::Vec3f p1, GW::Vec3f p2, GW::Vec3f p3, GW::Vec3f p4,
         ImVec2(s4.x, s4.y)
     };
 
-    drawList->AddPolyline(screenPoints, 4, color, true /* closed */, thickness);
+    drawList->AddPolyline(screenPoints, 4, color, thickness, ImDrawFlags_Closed);
 }
 
 void Overlay::DrawQuadFilled(GW::Vec2f p1, GW::Vec2f p2, GW::Vec2f p3, GW::Vec2f p4, ImU32 color) {
@@ -835,7 +835,7 @@ void Overlay::DrawPoly(GW::Vec2f center, float radius, ImU32 color, int numSegme
         points.emplace_back(ImVec2(x, y));
     }
 
-    drawList->AddPolyline(points.data(), static_cast<int>(points.size()), color, true /* closed */, thickness);
+    drawList->AddPolyline(points.data(), static_cast<int>(points.size()), color, thickness, ImDrawFlags_Closed);
 }
 
 void Overlay::DrawPolyFilled(GW::Vec2f center, float radius, ImU32 color, int numSegments) {
@@ -872,7 +872,7 @@ void Overlay::DrawPoly3D(GW::Vec3f center, float radius, ImU32 color, int numSeg
         points.emplace_back(ImVec2(screen.x, screen.y));
     }
 
-    drawList->AddPolyline(points.data(), static_cast<int>(points.size()), color, true /* closed */, thickness);
+    drawList->AddPolyline(points.data(), static_cast<int>(points.size()), color, thickness, ImDrawFlags_Closed);
 }
 
 void Overlay::DrawPolyFilled3D(GW::Vec3f center, float radius, ImU32 color, int numSegments, bool autoZ) {

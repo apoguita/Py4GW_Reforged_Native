@@ -22,6 +22,25 @@ ImDrawList* WindowDrawList() { return ImGui::GetWindowDrawList(); }
 ImDrawList* ForegroundDrawList() { return ImGui::GetForegroundDrawList(); }
 ImDrawList* BackgroundDrawList() { return ImGui::GetBackgroundDrawList(); }
 
+// ImGui 1.92.8 moved every ImDrawFlags value. Corner flags shifted out of the low
+// nibble (legacy ImDrawCornerFlags TopLeft=0x01 .. All=0x0F) up to bits 4-7, and
+// ImDrawFlags_Closed moved from 1<<0 to 1<<9. Any legacy value left in the low
+// nibble now lands in ImDrawFlags_InvalidMask_ (0x8000000F) and trips the
+// "Incorrect parameter. Did you swap 'thickness' and 'flags'?" assert. Normalize
+// legacy values so existing Python callers keep working without edits. New-style
+// values (corners >= 1<<4, Closed == 1<<9) have nothing in the low nibble and pass
+// through untouched.
+ImDrawFlags NormalizeCornerFlags(int flags) {
+    if (flags & 0x0F)
+        flags = (flags & ~0x0F) | ((flags & 0x0F) << 4);
+    return static_cast<ImDrawFlags>(flags);
+}
+ImDrawFlags NormalizeStrokeFlags(int flags) {
+    if (flags & 0x01)
+        flags = (flags & ~0x01) | ImDrawFlags_Closed;
+    return static_cast<ImDrawFlags>(flags);
+}
+
 }  // namespace
 
 void register_drawlist(py::module_& m) {
@@ -41,10 +60,14 @@ void register_drawlist(py::module_& m) {
              py::arg("min_x"), py::arg("max_x"), py::arg("y"), py::arg("col"), py::arg("thickness") = 1.0f)
         .def("add_line_v", [](ImDrawList& d, float x, float min_y, float max_y, ImU32 col, float t) { d.AddLineV(x, min_y, max_y, col, t); },
              py::arg("x"), py::arg("min_y"), py::arg("max_y"), py::arg("col"), py::arg("thickness") = 1.0f)
-        .def("add_rect", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, ImU32 col, float rounding, float thickness, ImDrawFlags flags) { d.AddRect(a, b, col, rounding, thickness, flags); },
+        // Python-facing order is legacy (rounding, flags, thickness) to match the stubs, the
+        // draw_list_add_rect free helper, and all existing callers; we reorder to ImGui 1.92.8's
+        // (thickness, flags) internally. Do NOT "fix" this to ImGui's order — it silently swaps
+        // thickness/flags for every caller. Same convention for add_polyline / path_stroke below.
+        .def("add_rect", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, ImU32 col, float rounding, int flags, float thickness) { d.AddRect(a, b, col, rounding, thickness, NormalizeCornerFlags(flags)); },
              py::arg("p_min"), py::arg("p_max"), py::arg("col"),
-             py::arg("rounding") = 0.0f, py::arg("thickness") = 1.0f, py::arg("flags") = 0)
-        .def("add_rect_filled", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, ImU32 col, float rounding, ImDrawFlags flags) { d.AddRectFilled(a, b, col, rounding, flags); },
+             py::arg("rounding") = 0.0f, py::arg("flags") = 0, py::arg("thickness") = 1.0f)
+        .def("add_rect_filled", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, ImU32 col, float rounding, int flags) { d.AddRectFilled(a, b, col, rounding, NormalizeCornerFlags(flags)); },
              py::arg("p_min"), py::arg("p_max"), py::arg("col"),
              py::arg("rounding") = 0.0f, py::arg("flags") = 0)
         .def("add_rect_filled_multi_color", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, ImU32 ul, ImU32 ur, ImU32 br, ImU32 bl) { d.AddRectFilledMultiColor(a, b, ul, ur, br, bl); },
@@ -76,8 +99,8 @@ void register_drawlist(py::module_& m) {
              py::arg("p1"), py::arg("p2"), py::arg("p3"), py::arg("p4"), py::arg("col"), py::arg("thickness"), py::arg("num_segments") = 0)
         .def("add_bezier_quadratic", [](ImDrawList& d, const ImVec2& p1, const ImVec2& p2, const ImVec2& p3, ImU32 col, float t, int segs) { d.AddBezierQuadratic(p1, p2, p3, col, t, segs); },
              py::arg("p1"), py::arg("p2"), py::arg("p3"), py::arg("col"), py::arg("thickness"), py::arg("num_segments") = 0)
-        .def("add_polyline", [](ImDrawList& d, const std::vector<ImVec2>& pts, ImU32 col, float thickness, ImDrawFlags flags) { d.AddPolyline(pts.data(), static_cast<int>(pts.size()), col, thickness, flags); },
-             py::arg("points"), py::arg("col"), py::arg("thickness"), py::arg("flags") = 0)
+        .def("add_polyline", [](ImDrawList& d, const std::vector<ImVec2>& pts, ImU32 col, int flags, float thickness) { d.AddPolyline(pts.data(), static_cast<int>(pts.size()), col, thickness, NormalizeStrokeFlags(flags)); },
+             py::arg("points"), py::arg("col"), py::arg("flags") = 0, py::arg("thickness") = 1.0f)
         .def("add_convex_poly_filled", [](ImDrawList& d, const std::vector<ImVec2>& pts, ImU32 col) { d.AddConvexPolyFilled(pts.data(), static_cast<int>(pts.size()), col); },
              py::arg("points"), py::arg("col"))
         .def("add_concave_poly_filled", [](ImDrawList& d, const std::vector<ImVec2>& pts, ImU32 col) { d.AddConcavePolyFilled(pts.data(), static_cast<int>(pts.size()), col); },
@@ -87,8 +110,8 @@ void register_drawlist(py::module_& m) {
         .def("path_clear", [](ImDrawList& d) { d.PathClear(); })
         .def("path_line_to", [](ImDrawList& d, const ImVec2& pos) { d.PathLineTo(pos); }, py::arg("pos"))
         .def("path_fill_convex", [](ImDrawList& d, ImU32 col) { d.PathFillConvex(col); }, py::arg("col"))
-        .def("path_stroke", [](ImDrawList& d, ImU32 col, float thickness, ImDrawFlags flags) { d.PathStroke(col, thickness, flags); },
-             py::arg("col"), py::arg("thickness") = 1.0f, py::arg("flags") = 0)
+        .def("path_stroke", [](ImDrawList& d, ImU32 col, int flags, float thickness) { d.PathStroke(col, thickness, NormalizeStrokeFlags(flags)); },
+             py::arg("col"), py::arg("flags") = 0, py::arg("thickness") = 1.0f)
         .def("path_arc_to", [](ImDrawList& d, const ImVec2& c, float r, float a_min, float a_max, int segs) { d.PathArcTo(c, r, a_min, a_max, segs); },
              py::arg("center"), py::arg("radius"), py::arg("a_min"), py::arg("a_max"), py::arg("num_segments") = 0)
         .def("path_arc_to_fast", [](ImDrawList& d, const ImVec2& c, float r, int a_min, int a_max) { d.PathArcToFast(c, r, a_min, a_max); },
@@ -99,7 +122,7 @@ void register_drawlist(py::module_& m) {
              py::arg("p2"), py::arg("p3"), py::arg("p4"), py::arg("num_segments") = 0)
         .def("path_bezier_quadratic_curve_to", [](ImDrawList& d, const ImVec2& p2, const ImVec2& p3, int segs) { d.PathBezierQuadraticCurveTo(p2, p3, segs); },
              py::arg("p2"), py::arg("p3"), py::arg("num_segments") = 0)
-        .def("path_rect", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, float rounding, ImDrawFlags flags) { d.PathRect(a, b, rounding, flags); },
+        .def("path_rect", [](ImDrawList& d, const ImVec2& a, const ImVec2& b, float rounding, int flags) { d.PathRect(a, b, rounding, NormalizeCornerFlags(flags)); },
              py::arg("rect_min"), py::arg("rect_max"), py::arg("rounding") = 0.0f, py::arg("flags") = 0)
 
         // ── channel splitting (draw out of order within one list) ──
@@ -126,14 +149,14 @@ void register_drawlist(py::module_& m) {
     m.def("draw_list_add_rect", [](float x1, float y1, float x2, float y2, ImU32 col,
                                    float rounding, int rounding_corners_flags, float thickness) {
         ImGui::GetWindowDrawList()->AddRect(ImVec2(x1, y1), ImVec2(x2, y2), col, rounding,
-                                            thickness, static_cast<ImDrawFlags>(rounding_corners_flags));
+                                            thickness, NormalizeCornerFlags(rounding_corners_flags));
     }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("col"),
        py::arg("rounding") = 0.0f, py::arg("rounding_corners_flags") = 0, py::arg("thickness") = 1.0f);
 
     m.def("draw_list_add_rect_filled", [](float x1, float y1, float x2, float y2, ImU32 col,
                                           float rounding, int rounding_corners_flags) {
         ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x1, y1), ImVec2(x2, y2), col, rounding,
-                                                  static_cast<ImDrawFlags>(rounding_corners_flags));
+                                                  NormalizeCornerFlags(rounding_corners_flags));
     }, py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"), py::arg("col"),
        py::arg("rounding") = 0.0f, py::arg("rounding_corners_flags") = 0);
 

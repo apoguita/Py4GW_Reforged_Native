@@ -17,6 +17,7 @@
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
 #include <imgui_impl_win32.h>
+#include <implot.h>
 
 #include <filesystem>
 #include <string>
@@ -379,6 +380,11 @@ bool Initialize(IDirect3DDevice9* device) {
         return false;
     }
 
+    // ImPlot keeps its own context alongside ImGui's; create it only after all
+    // fallible ImGui setup has succeeded (the failure returns above never made
+    // one, so only the normal Shutdown path destroys it).
+    ImPlot::CreateContext();
+
     g_imgui_initialized = true;
     Logger::Instance().LogInfo("ImGui initialized on Guild Wars render device.");
     return true;
@@ -395,6 +401,7 @@ void Shutdown() {
     ImGui_ImplWin32_Shutdown();
     console_host_ui::Shutdown();
     FontManager::Instance().Reset();
+    ImPlot::DestroyContext();
     ImGui::DestroyContext();
     g_imgui_initialized = false;
 }
