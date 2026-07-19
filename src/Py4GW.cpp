@@ -7,6 +7,7 @@
 #include "GW/map/map.h"
 #include "GW/render/render.h"
 #include "GW/shared_memory/manager.h"
+#include "GW/multibox/manager.h"
 #include "GW/textures/gw_dat_reader.h"
 #include "GW/textures/texture_manager.h"
 #include "callback/callback.h"
@@ -279,6 +280,16 @@ void DrawLoop(IDirect3DDevice9* device) {
     }
     PY4GW::System::Instance().UpdateFrameTimestamp();
 
+    // Multi-account ("multibox") buffer: publish this client's AccountData as the
+    // FIRST thing in the frame, before any Python draw callback reads it. This
+    // runs on the render thread (the game's own thread), so it snapshots
+    // consistent game state, and it runs every frame - including gated /
+    // map-loading frames below - so the slot keeps heartbeating and gate-zeroing.
+    // Update() self-gates internally on the account-email anchor.
+    if (auto& multibox_manager = GW::multibox::RuntimeManager(); multibox_manager.IsValid()) {
+        multibox_manager.Update();
+    }
+
     bool gate_skips = false;
     bool is_map_loading = GW::map::GetInstanceType() == GW::Constants::InstanceType::Loading;
     if (!is_map_loading) {
@@ -402,6 +413,18 @@ bool Py4GW_Initialize() {
         }
     }
 
+    auto& multibox_manager = GW::multibox::RuntimeManager();
+    if (!multibox_manager.IsValid()) {
+        // Fixed name shared by every boxed client on the machine; first instance
+        // creates + zeroes, later instances attach. Matches the Python buffer name.
+        if (!multibox_manager.CreateOrOpen(L"Py4GW_Shared_Mem")) {
+            Logger::Instance().LogWarning("Multibox shared memory initialization failed.");
+        } else {
+            Logger::Instance().LogInfo("Multibox shared memory ready (creator: " +
+                                       std::string(multibox_manager.IsCreator() ? "yes" : "no") + ").");
+        }
+    }
+
     CrashHandler::SetContext("startup", "crash_handler", "initialize");
     Logger::Instance().LogInfo("Initializing crash handler.");
     CrashHandler::Instance().Initialize();
@@ -448,6 +471,7 @@ void Py4GW_Shutdown() {
     Logger::Instance().LogInfo("Shutting down Python runtime.");
     PY4GW::python_runtime::Shutdown();
     GW::shared_memory::RuntimeManager().Destroy();
+    GW::multibox::RuntimeManager().Destroy();
     g_running = false;
     g_shutdown_requested = false;
     CrashHandler::SetContext("shutdown", "bootstrap", "shutdown_complete");
