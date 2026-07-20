@@ -6,8 +6,7 @@
 // GW::Context::Skill (via GW::skillbar::GetSkillConstantData) plus the generated
 // name lookups in skill_names.cpp. No shim, no legacy table re-port.
 
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
+#include "base/py_bindings.h"
 
 #include "GW/skillbar/skillbar.h"
 #include "GW/skillbar/skill_names.h"

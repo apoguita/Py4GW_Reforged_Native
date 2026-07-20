@@ -47,7 +47,7 @@ void Listener::Toggle() {
 
 void MerchantListener::OnPriceReceived(uint32_t item_id, uint32_t price) {
     quoted_item_id_ = item_id;
-    quoted_value_ = price;
+    quoted_value_ = static_cast<int>(price);
 }
 
 void MerchantListener::OnTransactionComplete() {

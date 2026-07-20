@@ -86,6 +86,8 @@ bool ChangeSecondProfession(Constants::Profession profession, uint32_t hero_inde
     if (!g_change_secondary_func)
         return false;
     uint32_t agent_id = agent::GetHeroAgentID(hero_index);
+    if (!agent_id)
+        return false;
     g_change_secondary_func(agent_id, static_cast<uint32_t>(profession));
     return true;
 }
@@ -100,6 +102,10 @@ bool LoadSkillbar(Constants::SkillID* skills, size_t n_skills, uint32_t hero_ind
     memset(skill_ids, 0, bytes);
     memcpy(skill_ids, skills, bytes);
     uint32_t agent_id = agent::GetHeroAgentID(hero_index);
+    if (!agent_id) {
+        free(skill_ids);
+        return false;
+    }
     game_thread::Enqueue([agent_id, n_skills, skill_ids] {
         g_load_skills_func(agent_id, static_cast<uint32_t>(n_skills), skill_ids);
         free(skill_ids);
@@ -409,6 +415,8 @@ bool SetAttributes(uint32_t attribute_count,
     if (!g_load_attributes_func)
         return false;
     uint32_t agent_id = agent::GetHeroAgentID(hero_index);
+    if (!agent_id)
+        return false;  // agent_id 0 trips the client's own assert (ChCliAttrib.cpp: attribState)
     g_load_attributes_func(agent_id, attribute_count, attribute_ids, attribute_values);
     return true;
 }

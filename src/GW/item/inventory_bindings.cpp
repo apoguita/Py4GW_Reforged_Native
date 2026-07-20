@@ -1,6 +1,4 @@
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include "GW/game_thread/game_thread.h"
 #include "GW/item/item.h"

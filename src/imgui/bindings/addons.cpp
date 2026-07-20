@@ -10,7 +10,7 @@
 #include <im_anim.h>
 #include <TextEditor.h>
 
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include <cctype>
 #include <string>

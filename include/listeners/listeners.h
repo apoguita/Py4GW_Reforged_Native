@@ -46,10 +46,19 @@ public:
     const char* Name() const override { return "merchant"; }
 
     uint32_t GetQuotedItemId() const { return quoted_item_id_; }
-    uint32_t GetQuotedValue() const { return quoted_value_; }
+    // Legacy `int quoted_value`: -1 is the "no quote yet" sentinel that Python
+    // waits on (Routines.Yield.Merchant._wait_for_quote checks `>= 0`). Must not
+    // be unsigned or the sentinel is unrepresentable.
+    int GetQuotedValue() const { return quoted_value_; }
     bool IsTransactionComplete() const { return transaction_complete_; }
     const std::vector<uint32_t>& GetMerchantWindowItems() const { return merchant_window_items_; }
     const std::vector<uint32_t>& GetMerchantItems() const { return merch_items_; }
+
+    // Pre-transaction resets. Legacy did these inline at the top of every
+    // PyMerchant buy/sell/craft/collect + quote method; without them the flags
+    // latch and every subsequent wait short-circuits on stale state.
+    void ResetTransaction() { transaction_complete_ = false; }
+    void ResetQuote() { quoted_value_ = -1; }
 
 protected:
     void Install() override;
@@ -68,7 +77,7 @@ private:
     PY4GW::HookEntry window_items_end_entry_;
 
     uint32_t quoted_item_id_ = 0;
-    uint32_t quoted_value_ = 0;
+    int quoted_value_ = 0;
     bool transaction_complete_ = false;
     std::vector<uint32_t> merchant_window_items_;
     std::vector<uint32_t> merch_items_;

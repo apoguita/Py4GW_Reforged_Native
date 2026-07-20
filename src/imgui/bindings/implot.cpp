@@ -5,7 +5,7 @@
 #include <imgui.h>
 #include <implot.h>
 
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include <array>
 #include <optional>

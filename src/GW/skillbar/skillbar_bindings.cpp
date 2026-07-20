@@ -1,5 +1,4 @@
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
+#include "base/py_bindings.h"
 
 #include "GW/skillbar/skillbar.h"
 #include "GW/context/skill.h"

@@ -10,6 +10,7 @@
 #include "GW/context/world.h"
 #include "GW/item/item.h"
 #include "GW/map/map.h"
+#include "GW/party/party.h"
 #include "GW/player/player.h"
 #include "GW/ui/ui.h"
 
@@ -237,9 +238,12 @@ namespace GW::agent {
     }
 
     AgentID GetHeroAgentID(uint32_t hero_index) {
-        auto* world = Context::GetWorldContext();
-        auto* hero_flags = world && world->hero_flags.valid() ? &world->hero_flags : nullptr;
-        return hero_flags && hero_index < hero_flags->size() ? hero_flags->at(hero_index).agent_id : 0;
+        // Legacy parity (GWCA Agents::GetHeroAgentID -> PartyMgr::GetHeroAgentID):
+        // index 0 is the controlled character, 1..n are 1-based into the party
+        // hero array. The party module owns that lookup; do not read
+        // world->hero_flags here - that array is the hero *flagging* state and
+        // does not contain the player, so index 0 silently resolved to agent 0.
+        return party::get_hero_agent_id(hero_index);
     }
 
     wchar_t* GetAgentEncName(uint32_t agent_id) {

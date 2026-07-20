@@ -1,6 +1,4 @@
-#include <pybind11/embed.h>
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
+#include "base/py_bindings.h"
 
 #include "GW/world_render/world_render.h"
 

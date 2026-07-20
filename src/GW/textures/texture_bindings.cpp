@@ -1,5 +1,4 @@
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
+#include "base/py_bindings.h"
 
 #include "GW/textures/gw_dat_reader.h"
 #include "GW/textures/texture_manager.h"

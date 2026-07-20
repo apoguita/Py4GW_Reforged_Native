@@ -1,6 +1,4 @@
-﻿#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include "GW/merchant/merchant.h"
 #include "GW/game_thread/game_thread.h"
@@ -20,15 +18,17 @@ namespace {
 struct PyMerchant {
     // NOTE: these mirror legacy include/py_merchant.h EXACTLY (same shape/form): fetch the live
     // GW::item::Item* via GetItemById, use &item->item_id (the live item's id field, not a copy),
-    // keep the count var + cost*count, and assign every give/recv field explicitly. The only legacy
-    // members intentionally not replicated are the stateful `transaction_complete`/`quoted_value`
-    // resets, which no longer live on this stateless binding (handled by listeners::Merchant).
+    // keep the count var + cost*count, and assign every give/recv field explicitly. The legacy
+    // `transaction_complete = false` / `quoted_value = -1` resets are kept too - they live on the
+    // listener now, but they must still fire here, at the same points, or the flags latch and
+    // Python's wait loops read stale state.
 
     // --- Trader (buy tab) ---
-    static bool TraderBuyItem(uint32_t item_id, uint32_t cost) {
+    bool TraderBuyItem(uint32_t item_id, uint32_t cost) {
         auto* item = GW::item::GetItemById(item_id);
         uint32_t count = 1;
         if (item) {
+            PY4GW::listeners::Merchant().ResetTransaction();
             cost = cost * count;
             GW::Context::MerchantTransactionInfo give, recv;
             give.item_count = 0;
@@ -44,10 +44,11 @@ struct PyMerchant {
         }
         return false;
     }
-    static bool TraderSellItem(uint32_t item_id, uint32_t price) {
+    bool TraderSellItem(uint32_t item_id, uint32_t price) {
         auto* item = GW::item::GetItemById(item_id);
         uint32_t count = 1;
         if (item) {
+            PY4GW::listeners::Merchant().ResetTransaction();
             price = price * count;
             GW::Context::MerchantTransactionInfo give, recv;
             give.item_count = count;
@@ -63,9 +64,10 @@ struct PyMerchant {
         }
         return false;
     }
-    static bool TraderRequestQuote(uint32_t item_id) {
+    bool TraderRequestQuote(uint32_t item_id) {
         auto* item = GW::item::GetItemById(item_id);
         if (item) {
+            PY4GW::listeners::Merchant().ResetQuote();
             GW::Context::MerchantQuoteInfo give, recv;
             give.unknown = 0;
             give.item_count = 0;
@@ -80,9 +82,10 @@ struct PyMerchant {
         }
         return false;
     }
-    static bool TraderRequestSellQuote(uint32_t item_id) {
+    bool TraderRequestSellQuote(uint32_t item_id) {
         auto* item = GW::item::GetItemById(item_id);
         if (item) {
+            PY4GW::listeners::Merchant().ResetQuote();
             GW::Context::MerchantQuoteInfo give, recv;
             recv.unknown = 0;
             recv.item_count = 0;
@@ -99,10 +102,11 @@ struct PyMerchant {
     }
 
     // --- Merchant (materials / rune trader) ---
-    static bool MerchantBuyItem(uint32_t item_id, uint32_t cost) {
+    bool MerchantBuyItem(uint32_t item_id, uint32_t cost) {
         auto* item = GW::item::GetItemById(item_id);
         uint32_t count = 1;
         if (item) {
+            PY4GW::listeners::Merchant().ResetTransaction();
             cost = cost * count;
             GW::Context::MerchantTransactionInfo give, recv;
             give.item_count = 0;
@@ -118,10 +122,11 @@ struct PyMerchant {
         }
         return false;
     }
-    static bool MerchantSellItem(uint32_t item_id, uint32_t price) {
+    bool MerchantSellItem(uint32_t item_id, uint32_t price) {
         auto* item = GW::item::GetItemById(item_id);
         uint32_t count = 1;
         if (item) {
+            PY4GW::listeners::Merchant().ResetTransaction();
             price = price * count;
             GW::Context::MerchantTransactionInfo give, recv;
             give.item_count = count;
@@ -138,51 +143,66 @@ struct PyMerchant {
         return false;
     }
 
-    // --- Crafter --- (legacy: no GetItemById guard, no Enqueue, uses the incoming vectors' data()
-    // directly and recv_info.item_ids = &item_id)
-    static bool CrafterBuyItems(uint32_t item_id, uint32_t cost,
-                                 const std::vector<uint32_t>& give_item_ids,
-                                 const std::vector<uint32_t>& give_item_quantities) {
-        if (give_item_ids.size() != give_item_quantities.size()) return false;
+    // --- Crafter --- 1:1 with legacy py_merchant.h:69-96 (no GetItemById guard, no Enqueue,
+    // give pointers straight into the vectors, recv_info.item_ids = &item_id).
+    bool CrafterBuyItems(uint32_t item_id, uint32_t cost,
+                         const std::vector<uint32_t>& give_item_ids,
+                         const std::vector<uint32_t>& give_item_quantities) {
+        if (give_item_ids.size() != give_item_quantities.size()) {
+            return false;
+        }
+        PY4GW::listeners::Merchant().ResetTransaction();
+
         uint32_t* item_ids_ptr = give_item_ids.empty() ? nullptr : const_cast<uint32_t*>(give_item_ids.data());
         uint32_t* item_quantities_ptr = give_item_quantities.empty() ? nullptr : const_cast<uint32_t*>(give_item_quantities.data());
+
         GW::Context::MerchantTransactionInfo give_info;
         give_info.item_count = static_cast<uint32_t>(give_item_ids.size());
         give_info.item_ids = item_ids_ptr;
         give_info.item_quantities = item_quantities_ptr;
+
         GW::Context::MerchantTransactionInfo recv_info;
         recv_info.item_count = 1;
         recv_info.item_ids = &item_id;
         recv_info.item_quantities = nullptr;
+
         return GW::merchant::TransactItems(GW::Constants::TransactionType::CrafterBuy, cost, give_info, 0, recv_info);
     }
 
-    // --- Collector ---
-    static bool CollectorBuyItems(uint32_t item_id, uint32_t cost,
-                                   const std::vector<uint32_t>& give_item_ids,
-                                   const std::vector<uint32_t>& give_item_quantities) {
-        if (give_item_ids.size() != give_item_quantities.size()) return false;
+    // --- Collector --- 1:1 with legacy py_merchant.h:98-126.
+    bool CollectorBuyItems(uint32_t item_id, uint32_t cost,
+                           const std::vector<uint32_t>& give_item_ids,
+                           const std::vector<uint32_t>& give_item_quantities) {
+        if (give_item_ids.size() != give_item_quantities.size()) {
+            return false;
+        }
+
         uint32_t* item_ids_ptr = give_item_ids.empty() ? nullptr : const_cast<uint32_t*>(give_item_ids.data());
         uint32_t* item_quantities_ptr = give_item_quantities.empty() ? nullptr : const_cast<uint32_t*>(give_item_quantities.data());
+
+        PY4GW::listeners::Merchant().ResetTransaction();
+
         GW::Context::MerchantTransactionInfo give_info;
         give_info.item_count = static_cast<uint32_t>(give_item_ids.size());
         give_info.item_ids = item_ids_ptr;
         give_info.item_quantities = item_quantities_ptr;
+
         GW::Context::MerchantTransactionInfo recv_info;
         recv_info.item_count = 1;
         recv_info.item_ids = &item_id;
         recv_info.item_quantities = nullptr;
+
         return GW::merchant::TransactItems(GW::Constants::TransactionType::CollectorBuy, cost, give_info, 0, recv_info);
     }
 
     // --- State getters (delegate to listeners::Merchant singleton) ---
-    static std::vector<uint32_t> GetTraderItems()       { return PY4GW::listeners::Merchant().GetMerchantItems(); }
-    static std::vector<uint32_t> GetTraderItems2()      { return {}; }  // legacy never populated
-    static std::vector<uint32_t> GetMerchantItems()     { return PY4GW::listeners::Merchant().GetMerchantWindowItems(); }
-    static uint32_t           GetQuotedValue()          { return PY4GW::listeners::Merchant().GetQuotedValue(); }
-    static uint32_t           GetQuotedItemID()         { return PY4GW::listeners::Merchant().GetQuotedItemId(); }
-    static bool               IsTransactionComplete()   { return PY4GW::listeners::Merchant().IsTransactionComplete(); }
-    static void               Update()                  { /* legacy no-op â€” state refreshed by listeners */ }
+    std::vector<uint32_t> GetTraderItems() const       { return PY4GW::listeners::Merchant().GetMerchantItems(); }
+    std::vector<uint32_t> GetTraderItems2() const      { return {}; }  // legacy never populated
+    std::vector<uint32_t> GetMerchantItems() const     { return PY4GW::listeners::Merchant().GetMerchantWindowItems(); }
+    int                GetQuotedValue() const          { return PY4GW::listeners::Merchant().GetQuotedValue(); }
+    uint32_t           GetQuotedItemID() const         { return PY4GW::listeners::Merchant().GetQuotedItemId(); }
+    bool               IsTransactionComplete() const   { return PY4GW::listeners::Merchant().IsTransactionComplete(); }
+    void               Update()                        { /* legacy no-op - state refreshed by listeners */ }
 };
 
 }  // namespace
@@ -190,28 +210,28 @@ struct PyMerchant {
 PYBIND11_EMBEDDED_MODULE(PyMerchant, m) {
     m.doc() = "Py4GW Merchant bindings";
 
-    // â”€â”€ Legacy PyMerchant class surface (parity with py_merchant.h) â”€â”€
+    // -- Legacy PyMerchant class surface (parity with py_merchant.h) --
     py::class_<PyMerchant>(m, "PyMerchant")
         .def(py::init<>())
-        .def_static("trader_buy_item",          &PyMerchant::TraderBuyItem,          py::arg("item_id"), py::arg("cost"))
-        .def_static("trader_sell_item",         &PyMerchant::TraderSellItem,         py::arg("item_id"), py::arg("price"))
-        .def_static("trader_request_quote",     &PyMerchant::TraderRequestQuote,     py::arg("item_id"))
-        .def_static("trader_request_sell_quote",&PyMerchant::TraderRequestSellQuote, py::arg("item_id"))
-        .def_static("merchant_buy_item",        &PyMerchant::MerchantBuyItem,        py::arg("item_id"), py::arg("cost"))
-        .def_static("merchant_sell_item",       &PyMerchant::MerchantSellItem,       py::arg("item_id"), py::arg("price"))
-        .def_static("crafter_buy_item",         &PyMerchant::CrafterBuyItems,        py::arg("item_id"), py::arg("cost"),
-             py::arg("give_item_ids"), py::arg("give_item_quantities"))
-        .def_static("collector_buy_item",       &PyMerchant::CollectorBuyItems,      py::arg("item_id"), py::arg("cost"),
-             py::arg("give_item_ids"), py::arg("give_item_quantities"))
-        .def_static("get_trader_item_list",     &PyMerchant::GetTraderItems)
-        .def_static("get_trader_item_list2",    &PyMerchant::GetTraderItems2)
-        .def_static("get_merchant_item_list",   &PyMerchant::GetMerchantItems)
-        .def_static("get_quoted_value",         &PyMerchant::GetQuotedValue)
-        .def_static("get_quoted_item_id",       &PyMerchant::GetQuotedItemID)
-        .def_static("is_transaction_complete",  &PyMerchant::IsTransactionComplete)
-        .def_static("update",                   &PyMerchant::Update);
+        .def("trader_buy_item",          &PyMerchant::TraderBuyItem,          py::arg("item_id"), py::arg("cost"), "Buy an item by model ID and quantity")
+        .def("trader_sell_item",         &PyMerchant::TraderSellItem,         py::arg("item_id"), py::arg("price"), "Sell an item by model ID and quantity")
+        .def("trader_request_quote",     &PyMerchant::TraderRequestQuote,     py::arg("item_id"), "Request a price quote for the item by its ID")
+        .def("trader_request_sell_quote",&PyMerchant::TraderRequestSellQuote, py::arg("item_id"), "Request a price quote for the item by its ID")
+        .def("merchant_buy_item",        &PyMerchant::MerchantBuyItem,        py::arg("item_id"), py::arg("cost"), "Buy an item by model ID and quantity")
+        .def("merchant_sell_item",       &PyMerchant::MerchantSellItem,       py::arg("item_id"), py::arg("price"), "Sell an item by model ID and quantity")
+        .def("crafter_buy_item",         &PyMerchant::CrafterBuyItems,        py::arg("item_id"), py::arg("cost"),
+             py::arg("give_item_ids"), py::arg("give_item_quantities"), "Buy an item by model ID and quantity")
+        .def("collector_buy_item",       &PyMerchant::CollectorBuyItems,      py::arg("item_id"), py::arg("cost"),
+             py::arg("give_item_ids"), py::arg("give_item_quantities"), "Buy an item by model ID and quantity")
+        .def("get_trader_item_list",     &PyMerchant::GetTraderItems, "Get the list of merchant items queried")
+        .def("get_trader_item_list2",    &PyMerchant::GetTraderItems2, "Get the list of merchant items queried")
+        .def("get_merchant_item_list",   &PyMerchant::GetMerchantItems, "Get the list of merchant items queried")
+        .def("get_quoted_value",         &PyMerchant::GetQuotedValue, "Get the last quoted price for the item")
+        .def("get_quoted_item_id",       &PyMerchant::GetQuotedItemID, "Get the last quoted item ID")
+        .def("is_transaction_complete",  &PyMerchant::IsTransactionComplete, "Check if the last transaction was completed")
+        .def("update",                   &PyMerchant::Update, "Update the Merchant state to be called from Python");
 
-    // â”€â”€ Modern free-function surface (reforged additions) â”€â”€
+    // -- Modern free-function surface (reforged additions) --
     m.def("transact_items", [](uint32_t type, uint32_t gold_give, const py::list& give_item_ids, const py::list& give_quantities,
                                 uint32_t gold_recv, const py::list& recv_item_ids, const py::list& recv_quantities) -> bool {
         auto txn_type = static_cast<GW::Constants::TransactionType>(type);

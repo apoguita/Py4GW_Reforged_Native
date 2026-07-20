@@ -1,6 +1,4 @@
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include "GW/player/player.h"
 #include "GW/context/context.h"

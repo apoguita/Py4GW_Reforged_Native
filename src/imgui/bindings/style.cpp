@@ -3,7 +3,6 @@
 #include "imgui/bindings.h"
 
 #include <imgui.h>
-#include <pybind11/stl.h>  // std::array<->Python caster for StyleConfig members
 
 #include <array>
 #include <stdexcept>

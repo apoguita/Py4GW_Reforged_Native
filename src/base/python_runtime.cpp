@@ -9,9 +9,7 @@
 #include "base/timer.h"
 
 #include <imgui.h>
-#include <pybind11/embed.h>
-#include <pybind11/eval.h>
-#include <pybind11/pybind11.h>
+#include "base/py_bindings.h"
 
 #include <windows.h>
 

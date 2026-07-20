@@ -4,7 +4,7 @@
 
 #include <imgui.h>
 
-#include <pybind11/stl.h>
+#include "base/py_bindings.h"
 
 #include <string>
 #include <vector>
