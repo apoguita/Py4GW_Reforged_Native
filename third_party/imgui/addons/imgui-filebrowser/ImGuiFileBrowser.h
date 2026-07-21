@@ -1,7 +1,26 @@
 #ifndef IMGUIFILEBROWSER_H
 #define IMGUIFILEBROWSER_H
 
+// Clean-room reimplementation of the ImGui-Addons file dialog.
+//
+// The original implementation was built on a bundled `dirent` shim plus a
+// hand-maintained "current_dirlist" breadcrumb that had to be kept in sync with
+// the path string by every navigation function. Any path that didn't flow
+// through that exact bookkeeping (e.g. SetCurrentPath with an absolute path)
+// left the breadcrumb empty and desynced, which both hid the navigation bar and
+// made "go up a directory" pop_back() an empty vector -> undefined behaviour and
+// a crash. This version keeps a single source of truth (a std::filesystem::path)
+// and derives everything (breadcrumb, listing, navigation) from it, so those
+// states can never disagree.
+//
+// The public surface (class name, DialogMode, showFileDialog, SetCurrentPath,
+// GetCurrentPath, SetUseModal, selected_fn/selected_path/ext) is unchanged so
+// existing call sites and the pybind binding keep compiling.
+
 #include <imgui.h>
+
+#include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -9,119 +28,127 @@ namespace imgui_addons
 {
     class ImGuiFileBrowser
     {
-        public:
-            ImGuiFileBrowser();
-            ~ImGuiFileBrowser();
+    public:
+        ImGuiFileBrowser();
+        ~ImGuiFileBrowser();
 
-            enum class DialogMode
-            {
-                SELECT, //Select Directory Mode
-                OPEN,   //Open File mode
-                SAVE    //Save File mode.
-            };
+        enum class DialogMode
+        {
+            SELECT, // Pick an existing directory.
+            OPEN,   // Pick an existing file.
+            SAVE    // Pick/type a file name to write.
+        };
 
-            /* Use this to show an open file dialog. The function takes label for the window,
-             * the size, a DialogMode enum value defining in which mode the dialog should operate and optionally the extensions that are valid for opening.
-             * Note that the select directory mode doesn't need any extensions.
-             */
-            bool showFileDialog(const std::string& label, const DialogMode mode, const ImVec2& sz_xy = ImVec2(0,0), const std::string& valid_types = "*.*");
+        /* Call every frame while the popup should be shown. Returns true for the
+         * single frame on which the user confirms a selection; read selected_path
+         * / selected_fn / ext on that frame. `valid_types` is a comma separated
+         * list of extensions (e.g. ".txt,.json") or "*.*" for everything.
+         */
+        bool showFileDialog(const std::string& label,
+                            DialogMode mode,
+                            const ImVec2& sz_xy = ImVec2(0, 0),
+                            const std::string& valid_types = "*.*");
 
-            void SetCurrentPath(const std::string& path);
-            const std::string& GetCurrentPath() const noexcept { return current_path; }
-            void SetUseModal(bool modal) noexcept { use_modal = modal; }
+        void SetCurrentPath(const std::string& path);
+        const std::string& GetCurrentPath() const noexcept { return current_path_str; }
+        void SetUseModal(bool modal) noexcept { use_modal = modal; }
 
-            /* Store the opened/saved file name or dir name (incase of selectDirectoryDialog) and the absolute path to the selection
-             * Should only be accessed when above functions return true else may contain garbage.
-             */
-            std::string selected_fn;
-            std::string selected_path;
-            std::string ext;    // Store the saved file extension
+        // Valid only on a frame showFileDialog() returned true.
+        std::string selected_fn;    // final path component (file or dir name)
+        std::string selected_path;  // full path (dirs get a trailing '/')
+        std::string ext;            // lowercase extension of the selection ("" for dirs)
 
+    private:
+        struct Entry
+        {
+            std::string name;                       // UTF-8 display name
+            std::filesystem::path full;             // absolute path
+            std::uintmax_t size = 0;
+            std::int64_t mtime = 0;                 // unix seconds, 0 = unknown
+            bool is_dir = false;
+            bool is_hidden = false;
+        };
 
-        private:
-            struct Info
-            {
-                Info(std::string name, bool is_hidden) : name(name), is_hidden(is_hidden)
-                {
-                }
-                std::string name;
-                bool is_hidden;
-            };
+        struct Crumb
+        {
+            std::string label;
+            std::filesystem::path path;             // empty => drives / Computer view
+        };
 
-            //Enum used as bit flags.
-            enum FilterMode
-            {
-                FilterMode_Files = 0x01,
-                FilterMode_Dirs = 0x02
-            };
+        struct ExtGroup
+        {
+            std::string label;
+            std::vector<std::string> exts;          // lowercase, leading '.'
+            bool all_files = false;
+        };
 
-            //Helper Functions
-            static std::string wStringToString(const wchar_t* wchar_arr);
-            static bool alphaSortComparator(const Info& a, const Info& b);
-            ImVec2 getButtonSize(std::string button_text);
+        // Navigation (single source of truth is `current_dir`).
+        void setDirectory(std::filesystem::path dir);
+        void navigateUp();
+        void refreshEntries();
+        void loadDrives();
+        void rebuildBreadcrumb();
+        void updatePathString();
 
-            /* Helper Functions that render secondary modals
-             * and help in validating file extensions and for filtering, parsing top navigation bar.
-             */
-            void setValidExtTypes(const std::string& valid_types_string);
-            bool validateFile();
-            void showErrorModal();
-            void showInvalidFileModal();
-            bool showReplaceFileModal();
-            void showHelpMarker(std::string desc);
-            void parsePathTabs(std::string str);
-            void filterFiles(int filter_mode);
+        // Filtering / sorting.
+        void parseExtFilters(const std::string& valid_types);
+        bool passesExtFilter(const std::string& name) const;
+        void sortEntries();
 
-            /* Core Functions that render the 4 different regions making up
-             * a simple file dialog
-             */
-            bool renderNavAndSearchBarRegion();
-            bool renderFileListRegion();
-            bool renderInputTextAndExtRegion();
-            bool renderButtonsAndCheckboxRegion();
-            bool renderInputComboBox();
-            void renderExtBox();
+        // Rendering regions.
+        void renderToolbar();
+        void renderFileList();
+        void renderFooter();
+        void renderErrorPopup();
+        void renderNewFolderPopup();
+        void renderOverwritePopup();
 
-            /* Core Functions that handle navigation and
-             * reading directories/files
-             */
-            bool readDIR(std::string path);
-            bool onNavigationButtonClick(int idx);
-            bool onDirClick(int idx);
+        // Actions.
+        void requestConfirm();
+        void commitFile(const std::filesystem::path& target);
+        void commitDirectory(const std::filesystem::path& target);
+        void closeDialog();
+        void setError(std::string title, std::string message);
 
-            // Functions that reset state and/or clear file list when reading new directory
-            void clearFileList();
-            void closeDialog();
+        // ---- State ----
+        DialogMode dialog_mode = DialogMode::OPEN;
+        std::filesystem::path current_dir;          // empty => drives view
+        std::string current_path_str;               // GetCurrentPath() backing store
 
-            #if defined (WIN32) || defined (_WIN32) || defined (__WIN32)
-            bool loadWindowsDrives(); // Helper Function for Windows to load Drive Letters.
-            #endif
+        std::vector<Entry> entries;
+        std::vector<Crumb> breadcrumb;
+        std::vector<ExtGroup> ext_groups;
+        int ext_group_idx = 0;
+        int selected_index = -1;                    // index into `entries`, or -1
 
-            #if defined(unix) || defined(__unix__) || defined(__unix) || defined(__APPLE__)
-            void initCurrentPath();   // Helper function for UNIX based system to load Absolute path using realpath
-            #endif
+        int sort_col = 0;                           // 0 name, 1 size, 2 date
+        bool sort_asc = true;
 
-            ImVec2 min_size, max_size, input_combobox_pos, input_combobox_sz;
-            DialogMode dialog_mode;
-            int filter_mode, col_items_limit, selected_idx, selected_ext_idx;
-            float col_width, ext_box_width;
-            bool show_hidden, show_inputbar_combobox, is_dir, is_appearing, filter_dirty, validate_file, show_all_valid_files;
-            char input_fn[256];
+        ImGuiTextFilter search_filter;
+        char input_fn[512] = {0};
+        char new_folder_name[256] = {0};
 
-            std::vector<std::string> valid_exts;
-            std::vector<std::string> current_dirlist;
-            std::vector<Info> subdirs;
-            std::vector<Info> subfiles;
-            std::string current_path, error_msg, error_title, invfile_modal_id, repfile_modal_id;
-            bool use_modal = true;
+        std::string error_title;
+        std::string error_msg;
+        bool show_error = false;
 
-            ImGuiTextFilter filter;
-            std::string valid_types;
-            std::vector<const Info*> filtered_dirs; // Note: We don't need to call delete. It's just for storing filtered items from subdirs and subfiles so we don't use PassFilter every frame.
-            std::vector<const Info*> filtered_files;
-            std::vector< std::reference_wrapper<std::string> > inputcb_filter_files;
+        std::filesystem::path pending_overwrite;
+        bool want_overwrite = false;
+        bool open_new_folder = false;
+
+        // Deferred so we never mutate `entries` while iterating it mid-render.
+        std::filesystem::path pending_dir;
+        bool has_pending_dir = false;
+        bool pending_up = false;
+        bool pending_confirm = false;
+
+        bool selection_made = false;                // return value for showFileDialog()
+        bool want_close = false;                    // close the dialog at parent-popup scope
+        bool use_modal = true;
+        bool show_hidden = false;
+
+        ImVec2 min_size = ImVec2(560, 380);
     };
 }
-
 
 #endif // IMGUIFILEBROWSER_H
