@@ -3,6 +3,16 @@
 #include "listeners/listeners.h"
 
 #include "listeners/agent_events_listener.h"
+#include "listeners/auto_cancel_ua_listener.h"
+#include "listeners/auto_open_chest_listener.h"
+#include "listeners/auto_return_listener.h"
+#include "listeners/cinematic_skip_listener.h"
+#include "listeners/faction_donate_listener.h"
+#include "listeners/faction_warning_listener.h"
+#include "listeners/keep_quest_listener.h"
+#include "listeners/memory_patch_listeners.h"
+#include "listeners/signet_capture_listener.h"
+#include "listeners/skill_filter_listener.h"
 #include "GW/common/stoc.h"
 #include "GW/context/context.h"
 #include "GW/context/item.h"
@@ -135,7 +145,21 @@ namespace {
 
 // Every toggleable listener, in registration order.
 std::vector<Listener*>& Registry() {
-    static std::vector<Listener*> listeners = {&Merchant(), &AgentEvents()};
+    static std::vector<Listener*> listeners = {
+        &Merchant(),
+        &AgentEvents(),
+        &SkillListFilter(),
+        &SignetOfCaptureLimit(),
+        &FactionWarning(),
+        &CinematicSkip(),
+        &AutoReturnOnDefeat(),
+        &DisableGoldConfirmation(),
+        &RemoveCastBarMinimum(),
+        &AutoCancelUnyieldingAura(),
+        &AutoOpenLockedChest(),
+        &FactionDonateSkipName(),
+        &KeepCurrentQuest(),
+    };
     return listeners;
 }
 
@@ -162,6 +186,14 @@ bool Initialize() {
 void Shutdown() {
     for (Listener* listener : Registry()) {
         listener->Disable();
+    }
+}
+
+void Update(float delta_ms) {
+    for (Listener* listener : Registry()) {
+        if (listener->IsEnabled()) {
+            listener->Update(delta_ms);
+        }
     }
 }
 

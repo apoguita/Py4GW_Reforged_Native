@@ -31,6 +31,13 @@ public:
     // consumer toggles them on (e.g. high-volume capture).
     virtual bool EnabledByDefault() const { return true; }
 
+    // Per-tick hook for listeners that poll game state rather than react to a
+    // packet/UI callback (e.g. the faction-earned warning). Called once per
+    // update-loop step for enabled listeners only; default is a no-op so
+    // callback-only listeners ignore it. Runs on the runtime update thread
+    // without the GIL - do no Python work here.
+    virtual void Update(float /*delta_ms*/) {}
+
 protected:
     virtual void Install() = 0;
     virtual void Uninstall() = 0;
@@ -88,6 +95,11 @@ private:
 // into the top-level Py4GW bootstrap after the GW layer (StoC hooks) is ready.
 bool Initialize();
 void Shutdown();
+
+// Per-tick pump for polling listeners. Called from the runtime update loop;
+// dispatches Listener::Update to every enabled listener. Cheap when no
+// polling listener is enabled (base Update is a no-op).
+void Update(float delta_ms = 0.0f);
 
 // Runtime toggle surface, addressed by listener name (see Listener::Name).
 // Each returns false when the name is unknown.

@@ -694,6 +694,9 @@ void Shutdown();
 Frame* GetRootFrame();
 Frame* GetFrameById(uint32_t frame_id);
 Frame* GetParentFrame(Frame* frame);
+// True if `child` is `parent` or a descendant of it (walks the parent chain).
+// Migrated from GWCA ToolboxUtils::BelongsToFrame.
+bool BelongsToFrame(Frame* parent, Frame* child);
 Frame* GetChildFrame(Frame* parent, uint32_t child_offset);
 Frame* GetChildFrame(Frame* parent, std::initializer_list<uint32_t> child_offsets);
 Frame* GetFrameByLabel(const wchar_t* frame_label);

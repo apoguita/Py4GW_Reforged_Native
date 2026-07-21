@@ -427,6 +427,16 @@ Frame* GetParentFrame(Frame* frame) {
     return frame ? frame->relation.GetParent() : nullptr;
 }
 
+bool BelongsToFrame(Frame* parent, Frame* child) {
+    while (child && parent) {
+        if (child == parent) {
+            return true;
+        }
+        child = GetParentFrame(child);
+    }
+    return false;
+}
+
 Frame* GetChildFrame(Frame* parent, uint32_t child_offset) {
     if (!(g_get_child_frame_id_func && parent)) {
         return nullptr;

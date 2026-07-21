@@ -21,6 +21,10 @@ enum class UIMessage : uint32_t {
     kSetLayout = 0x37,
     kMeasureContent = 0x38,
     kRefreshContent = 0x3B,
+    // Frame-level "add skill to skill list" message. Used by the skill_list_filter
+    // listener to intercept skills being added to the tome / skill-trainer /
+    // capture windows (legacy GWToolbox GameSettings::OnSkillList_UICallback).
+    kFrameMessage_0x47 = 0x47,
     kHighBitBase = 0x10000000,
     kRerenderAgentModel = 0x10000007,
     kAgentDestroy = 0x10000008,

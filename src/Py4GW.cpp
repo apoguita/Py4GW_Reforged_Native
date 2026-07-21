@@ -251,6 +251,10 @@ void UpdateLoopStep() {
     // Dialog::PollMapChange from the update loop before the GIL).
     GW::dialog::PollMapChange();
 
+    // Pump polling listeners (e.g. faction-earned warning). Pure C++ game-state
+    // reads + logging; runs regardless of the Python-ready gate.
+    PY4GW::listeners::Update();
+
     if (py_ready) {
         using PyCallback = PY4GW::PyCallback;
         PyCallback::ExecutePhase(PyCallback::Phase::PreUpdate, PyCallback::Context::Update);
