@@ -206,7 +206,12 @@ void __cdecl OnSendUIMessage(UIMessage message_id, void* wparam, void* lparam) {
 }
 
 void OnOpenTemplateUiMessage(PY4GW::HookStatus* hook_status, UIMessage msgid, void* wparam, void*) {
-    PY4GW_ASSERT(msgid == UIMessage::kOpenTemplate && wparam);
+    // The game legitimately emits kOpenTemplate with a null wparam during normal
+    // frame processing. Guard gracefully instead of fatal-asserting (a null wparam
+    // used to crash the whole client here).
+    if (msgid != UIMessage::kOpenTemplate || !wparam) {
+        return;
+    }
     auto* info = static_cast<ChatTemplate*>(wparam);
     if (!(g_open_links && info && info->code.valid() && info->name)) {
         return;
