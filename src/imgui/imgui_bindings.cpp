@@ -501,7 +501,7 @@ PYBIND11_EMBEDDED_MODULE(PyImGui, m) {
     // ═══════════════ TABS ═══════════════════════════════════════
     m.def("begin_tab_bar", &ImGui::BeginTabBar, py::arg("str_id"), py::arg("flags") = 0);
     m.def("end_tab_bar", &ImGui::EndTabBar);
-    m.def("begin_tab_item", &ImGui::BeginTabItem, py::arg("label"), py::arg("p_open") = nullptr, py::arg("flags") = 0);
+    m.def("begin_tab_item", &ImGui::BeginTabItem, py::arg("label"), py::arg("p_open") = true, py::arg("flags") = 0);
     m.def("begin_tab_item_closable", [](const char* label, bool p_open, int flags) -> py::tuple {
         bool open = p_open; bool vis = ImGui::BeginTabItem(label, &open, flags); return py::make_tuple(vis, open);
     }, py::arg("label"), py::arg("p_open") = true, py::arg("flags") = 0);

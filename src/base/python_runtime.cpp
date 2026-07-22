@@ -398,6 +398,7 @@ bool Initialize() {
             "Py4GW",
             "PySystem",
             "PySettings",
+            "PyJson",
             "PyProfiler",
             "PyCallback",
             "PyListeners",

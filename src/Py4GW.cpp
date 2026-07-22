@@ -21,6 +21,7 @@
 #include "base/python_runtime.h"
 #include "base/scanner.h"
 #include "settings/settings.h"
+#include "json/json_factory.h"
 #include "system/system.h"
 
 #include <imgui.h>
@@ -225,6 +226,7 @@ void UpdateLoopStep() {
     }
     PY4GW::System::Instance().UpdateAccountAnchor();
     PY4GW::SettingsManager::Instance().Update();
+    PY4GW::JsonFactory::Instance().Update();
 
     bool is_map_loading = GW::map::GetInstanceType() == GW::Constants::InstanceType::Loading;
     if (!is_map_loading) {
@@ -459,6 +461,9 @@ void Py4GW_Shutdown() {
 
     CrashHandler::SetContext("shutdown", "settings", "flush");
     PY4GW::SettingsManager::Instance().FlushAll();
+
+    CrashHandler::SetContext("shutdown", "json", "flush");
+    PY4GW::JsonFactory::Instance().FlushAll();
 
     GW::render::SetRenderCallback(nullptr);
     GW::render::SetResetCallback(nullptr);
