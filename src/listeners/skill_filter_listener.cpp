@@ -30,7 +30,7 @@ void __cdecl OnSkillList_UICallback(ui::InteractionMessage* message, void* wPara
     PY4GW::HookBase::EnterHook();
 
     const SkillListFilterListener& self = SkillListFilter();
-    if (message->message_id == ui::UIMessage::kFrameMessage_0x47) {
+    if (message->message_id == ui::UIMessage::kSkillListAddSkill) {
         // Hide skills the character already owns (low bits flag learned skills).
         if (self.HideKnownSkills() && (static_cast<uint32_t*>(wParam)[1] & 0x3) != 0) {
             PY4GW::HookBase::LeaveHook();
