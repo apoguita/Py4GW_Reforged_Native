@@ -140,6 +140,11 @@ PYBIND11_EMBEDDED_MODULE(PyAgentRecolor, m) {
         "Rules and per-category gates are preserved.");
     m.def("is_master_enabled", []() { return AgentRecolor::Instance().IsMasterEnabled(); });
 
+    m.def("refresh_name_tags", []() { AgentRecolor::Instance().RefreshNameTags(); },
+        "Force every overhead name tag to re-render (game-thread) so a rule change applies "
+        "immediately instead of only after a hover/state-change re-resolves the tag. No-op if the "
+        "name-tag visibility symbols did not resolve on this build.");
+
     m.def("clear_all_rules", []() { AgentRecolor::Instance().ClearAllRules(); },
         "Drop every color rule across agents, gadgets, and items.");
 

@@ -197,7 +197,10 @@ This path is **not yet fully RE'd**: the specific rarity→`EColor` mapping insi
 | `AvCharGetConsiderColor(out,id,flag)` — anchor + reads only | `ram:80bbaf46` | **`FUN_007d9cf0`** | verified |
 | `ManagerFindChar(id)` | — | `FUN_007fc920` | verified |
 | `CCharAgent::GetTextData` | `ram:80b7faa7` | `FUN_007f0620` | verified |
-| `CBaseAgent::NameUpdate` | `ram:80a4afb4` | not pinned | — |
+| `CBaseAgent::NameUpdate` | `ram:80a4afb4` | not pinned | diffs old/new name-flags, sends the tag FrameMsg; **only re-sends on a flag/state change** |
+| `CBaseAgent::NameFlagUpdate` | `ram:80a4b714` | not pinned | sets/clears flags at `view+0x58`, calls NameUpdate iff changed |
+| `SetGlobalNameTagVisibility(flags)` — **tag refresh** | — | thunk **`0x007dbbc0`** → **`FUN_007fd5f0`** | verified (see §11) |
+| `GlobalNameTagVisibilityFlags` (u32) | — | **`0x010813cc`** | verified (imm at setter+0xa) |
 | `CName::OnUpdate` (reads msg+0x14) | `ram:812a47ab` | not pinned | — |
 | Markup color parser `ConvertParamUnsigned` | `ram:80dae0c0` | **`FUN_00609600`** | verified |
 | Named-color table | `ram:005a8370` | **`0x00bef348`** | verified |
@@ -223,6 +226,46 @@ Embedded module `PyAgentTagColor`:
 | `get_diagnostics()` / `reset_diagnostics()` | counters: `hook_installed`, `resolver_calls_seen`, `agent_rule_hits`, `allegiance_rule_hits`, `last_agent_id`, `last_color` |
 
 **Rule precedence:** per-agent → per-allegiance → game default. Colors are ARGB `0xAARRGGBB`. The detour must run the original first, then apply the highest-precedence matching rule to `*out`.
+
+---
+
+## 11. Forcing a tag refresh (so a recolor applies without hovering)
+
+The resolver hook only changes what color the game *computes* — but the game caches each
+overhead tag and re-runs the pipeline (`NameUpdate → GetTextData → GetConsiderColor`) **only on a
+name-flag/state change**: `NameUpdate` (`ram:80a4afb4`) early-returns unless the derived
+show/hide/attrib state differs, and `NameFlagUpdate` (`ram:80a4b714`) only calls it when the flags
+at `view+0x58` actually change. A pure color override never changes those flags, so an idle/moving
+agent keeps its last-resolved color until a `Hover`/`Advance`/`SelectPrimary`/`ApplyTeam`/
+`UpdateStatusDeath` fires (hover being the manual one). This is *the* reason recolors "only apply on
+mouseover".
+
+**Fix (GWCA/Toolbox technique — `GameSettings.cpp::OnAgentAllegianceChanged`): a global name-tag
+"flash".** `SetGlobalNameTagVisibility(flags)` walks the agent-view array (`DAT_00bf35c4`, count
+`DAT_00bf35cc`) and re-issues every tag, gated on a global flags word. Calling it with `0` then the
+previous value re-renders **all** tags (re-running the resolver → our color), and because both calls
+run in one frame there is no visible blink:
+
+```c
+const uint32_t prev = *GlobalNameTagVisibilityFlags;   // 0x010813cc
+SetGlobalNameTagVisibility(0);                          // hide all
+SetGlobalNameTagVisibility(prev);                       // restore -> re-render + re-resolve
+```
+
+**EXE 06-14 pins & build-portable resolve** (mirrors Toolbox):
+- Anchor `OR ESI, 0x6A0` = `81 CE A0 06 00 00` (unique) at `0x004ecbc9`, inside a flags-builder that
+  `CALL`s the setter 7 bytes later.
+- `setter = FunctionFromNearCall(anchor + 0x7)` → thunk `0x007dbbc0` → **`FUN_007fd5f0`**
+  (`Scanner::FunctionFromNearCall` follows the `E9` thunk automatically). ABI: `void __cdecl(uint32_t)`.
+- `flags_global = *(u32*)(setter + 0xA)` = **`0x010813cc`** (the `CMP EBX,[imm32]` operand at
+  `FUN_007fd5f0 + 0x8`).
+
+Implemented in `agent_recolor` as `SetNameTagVisibilityFn g_set_nametag_visibility` + `uint32_t*
+g_nametag_flags` (resolvers `set_global_nametag_visibility_func` / `global_nametag_visibility_flags`
+in `offsets/agent_recolor.json`) and `AgentRecolor::RefreshNameTags()`, which enqueues the flash on
+the **game thread** (`GW::game_thread::Enqueue`) since the flash dispatches UI messages. Bound as
+`PyAgentRecolor.refresh_name_tags()`; the Python engine calls it only when the colored set actually
+changes. Non-fatal: if the symbols miss, recolor still works (tags refresh on hover/state change).
 
 ---
 

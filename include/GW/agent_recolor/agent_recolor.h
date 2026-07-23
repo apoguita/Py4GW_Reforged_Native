@@ -51,6 +51,12 @@ using FindCharFn = void*(__cdecl*)(uint32_t agent_id);
 // CGadgetAgent/CItemAgent::GetTextData (EXE FUN_007f9950 / FUN_007fa6a0),
 // __thiscall emulated as __fastcall. Trailing args are TextData* (0x14 bytes).
 using TextDataFn = void(__fastcall*)(void* view, void* edx, uint32_t* name_tag, uint32_t* sub_text);
+// SetGlobalNameTagVisibility (EXE thunk 0x007dbbc0 -> FUN_007fd5f0), __cdecl(flags):
+// walks the agent-view array and re-issues each name tag, gated on a global flags
+// word. "Flashing" it (Set(0) then Set(prev)) forces EVERY name tag to re-render,
+// which re-runs the color resolver so our recolor applies without a manual hover.
+// (GWCA/Toolbox use the same trick for allegiance-change tag refresh.)
+using SetNameTagVisibilityFn = void(__cdecl*)(uint32_t flags);
 
 // Module-owned resolved symbols.
 extern ResolverFn g_resolver;
@@ -62,6 +68,9 @@ extern TextDataFn g_gadget_get_text_data;
 extern TextDataFn g_gadget_get_text_data_original;
 extern TextDataFn g_item_get_text_data;
 extern TextDataFn g_item_get_text_data_original;
+// Global name-tag refresh (not hooked — called to force a re-render).
+extern SetNameTagVisibilityFn g_set_nametag_visibility;
+extern uint32_t* g_nametag_flags;
 
 // Resolvers (bodies in agent_recolor_patterns.cpp; inputs in the JSON).
 bool ResolveFindCharFunction();
@@ -69,6 +78,8 @@ bool ResolveConsiderColorResolver();
 bool ResolveCharGetTextData();
 bool ResolveGadgetGetTextData();
 bool ResolveItemGetTextData();
+bool ResolveSetNameTagVisibility();   // non-fatal enhancement (hover still works if it fails)
+bool ResolveNameTagFlags();
 
 class AgentRecolor {
 public:
@@ -188,6 +199,13 @@ public:
     void MasterEnable();
     void MasterDisable();
     bool IsMasterEnabled() const;
+
+    // Force every overhead name tag to re-render (enqueued on the game thread) so a
+    // rule change applies immediately instead of only after the game re-resolves a
+    // tag on hover/state-change. Flash = SetGlobalNameTagVisibility(0) then (prev);
+    // both run in one frame so there is no visible blink. No-op if the setter/flags
+    // global did not resolve.
+    void RefreshNameTags();
 
     void ClearAllRules();  // all three categories
     Diagnostics GetDiagnostics() const;

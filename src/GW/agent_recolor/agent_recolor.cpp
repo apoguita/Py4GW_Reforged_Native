@@ -11,6 +11,7 @@
 #include "GW/context/item.h"
 #include "GW/common/constants/item.h"
 #include "GW/native_ui/native_ui.h"
+#include "GW/game_thread/game_thread.h"
 
 #include <cwctype>
 #include <cwchar>
@@ -26,6 +27,8 @@ TextDataFn g_gadget_get_text_data = nullptr;
 TextDataFn g_gadget_get_text_data_original = nullptr;
 TextDataFn g_item_get_text_data = nullptr;
 TextDataFn g_item_get_text_data_original = nullptr;
+SetNameTagVisibilityFn g_set_nametag_visibility = nullptr;
+uint32_t* g_nametag_flags = nullptr;
 
 namespace {
     int ResolveAgentAllegiance(uint32_t agent_id) {
@@ -257,6 +260,12 @@ void AgentRecolor::Initialize() {
             item_hook_installed_.store(true);
         }
     }
+
+    // --- name-tag refresh symbols (NOT hooked; called to force a re-render) ---
+    // Best-effort: recolor works without these (tags refresh on hover/state change);
+    // with them, RefreshNameTags() makes a rule change apply immediately.
+    ResolveSetNameTagVisibility();
+    ResolveNameTagFlags();
 }
 
 void AgentRecolor::Terminate() {
@@ -808,6 +817,21 @@ void AgentRecolor::MasterDisable() {
 }
 
 bool AgentRecolor::IsMasterEnabled() const { return master_enabled_.load(); }
+
+void AgentRecolor::RefreshNameTags() {
+    if (!g_set_nametag_visibility || !g_nametag_flags)
+        return;  // symbols not resolved on this build; hover/state-change still refreshes
+    // The flash walks the agent-view array and dispatches UI messages, so it MUST run
+    // on the game thread (the Python update thread is not phase-locked to render).
+    GW::game_thread::Enqueue([] {
+        if (!g_set_nametag_visibility || !g_nametag_flags)
+            return;
+        CrashContextScope context("runtime", "agent_recolor", "refresh_name_tags");
+        const uint32_t prev = *g_nametag_flags;
+        g_set_nametag_visibility(0);      // hide all tags
+        g_set_nametag_visibility(prev);   // restore -> forces a re-render (+ resolver rerun)
+    });
+}
 
 void AgentRecolor::ClearAllRules() {
     ClearRules();

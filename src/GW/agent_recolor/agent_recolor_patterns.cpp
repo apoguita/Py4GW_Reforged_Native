@@ -53,4 +53,17 @@ bool ResolveItemGetTextData() {
         "agent_recolor");
 }
 
+bool ResolveSetNameTagVisibility() {
+    CrashContextScope context("startup", "agent_recolor", "resolve_set_nametag_visibility");
+    PY4GW::Patterns::Resolve("agent_recolor.set_global_nametag_visibility_func", &g_set_nametag_visibility);
+    // Non-fatal: if this misses, recolor still works (tags refresh on hover/state change).
+    return g_set_nametag_visibility != nullptr;
+}
+
+bool ResolveNameTagFlags() {
+    CrashContextScope context("startup", "agent_recolor", "resolve_nametag_flags");
+    PY4GW::Patterns::Resolve("agent_recolor.global_nametag_visibility_flags", &g_nametag_flags);
+    return g_nametag_flags != nullptr;
+}
+
 }  // namespace GW::agent_recolor
