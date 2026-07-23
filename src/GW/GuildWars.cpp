@@ -10,6 +10,7 @@
 #include "GW/agent_recolor/agent_recolor.h"
 #include "GW/camera/camera.h"
 #include "GW/chat/chat.h"
+#include "GW/chat_commands/chat_commands.h"
 #include "GW/context/context.h"
 #include "GW/dialog/dialog.h"
 #include "GW/effects/effects.h"
@@ -51,7 +52,7 @@ bool ScanMemoryManager() {
 void ShutdownMemoryManager() {
 }
 
-constexpr std::array<InitStep, 27> kInitSteps = {{
+constexpr std::array<InitStep, 28> kInitSteps = {{
     {"game_thread", "initialize", &GW::game_thread::Initialize, &GW::game_thread::Shutdown},
     {"stoc", "initialize", &GW::StoC::Initialize, &GW::StoC::Shutdown},
     {"render", "initialize", &GW::render::Initialize, &GW::render::Shutdown},
@@ -68,6 +69,7 @@ constexpr std::array<InitStep, 27> kInitSteps = {{
     {"map", "initialize", &GW::map::Initialize, &GW::map::Shutdown},
     {"guild", "initialize", &GW::guild::Initialize, &GW::guild::Shutdown},
     {"chat", "initialize", &GW::chat::Initialize, &GW::chat::Shutdown},
+    {"chat_commands", "initialize", &GW::chat_commands::Initialize, &GW::chat_commands::Shutdown},
     {"item", "initialize", &GW::item::Initialize, &GW::item::Shutdown},
     {"trade", "initialize", &GW::trade::Initialize, &GW::trade::Shutdown},
     {"merchant", "initialize", &GW::merchant::Initialize, &GW::merchant::Shutdown},
