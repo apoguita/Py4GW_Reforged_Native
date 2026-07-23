@@ -330,6 +330,13 @@ bool AgentRecolor::RemoveAgentColor(uint32_t agent_id) {
     if (erased) RebuildAgentSnapshotLocked();
     return erased;
 }
+void AgentRecolor::SetAgentColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    agent_rules_.clear();
+    for (const auto& r : rules)
+        agent_rules_[r.first] = r.second;
+    RebuildAgentSnapshotLocked();
+}
 void AgentRecolor::SetAllegianceColor(int allegiance, uint32_t argb) {
     std::lock_guard<std::mutex> lock(mutex_);
     allegiance_rules_[allegiance] = argb;
@@ -444,6 +451,13 @@ bool AgentRecolor::RemoveGadgetColor(uint32_t agent_id) {
     const bool erased = gadget_rules_.erase(agent_id) != 0;
     if (erased) RebuildGadgetSnapshotLocked();
     return erased;
+}
+void AgentRecolor::SetGadgetColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    gadget_rules_.clear();
+    for (const auto& r : rules)
+        gadget_rules_[r.first] = r.second;
+    RebuildGadgetSnapshotLocked();
 }
 void AgentRecolor::SetAllGadgetColor(uint32_t argb) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -764,6 +778,36 @@ const wchar_t* AgentRecolor::GetItemColorString(uint32_t model_id, uint32_t argb
 }
 
 // ================= Shared =================
+
+void AgentRecolor::MasterEnable() {
+    if (master_enabled_.exchange(true))
+        return;  // already on
+    CrashContextScope context("runtime", "agent_recolor", "master_enable_hooks");
+    if (agent_hook_installed_.load() && g_resolver)
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_resolver));
+    if (char_tag_hook_installed_.load() && g_char_get_text_data)
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_char_get_text_data));
+    if (gadget_hook_installed_.load() && g_gadget_get_text_data)
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_gadget_get_text_data));
+    if (item_hook_installed_.load() && g_item_get_text_data)
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_item_get_text_data));
+}
+
+void AgentRecolor::MasterDisable() {
+    if (!master_enabled_.exchange(false))
+        return;  // already off
+    CrashContextScope context("runtime", "agent_recolor", "master_disable_hooks");
+    if (agent_hook_installed_.load() && g_resolver)
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_resolver));
+    if (char_tag_hook_installed_.load() && g_char_get_text_data)
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_char_get_text_data));
+    if (gadget_hook_installed_.load() && g_gadget_get_text_data)
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_gadget_get_text_data));
+    if (item_hook_installed_.load() && g_item_get_text_data)
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_item_get_text_data));
+}
+
+bool AgentRecolor::IsMasterEnabled() const { return master_enabled_.load(); }
 
 void AgentRecolor::ClearAllRules() {
     ClearRules();

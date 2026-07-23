@@ -30,6 +30,12 @@ PYBIND11_EMBEDDED_MODULE(PyAgentRecolor, m) {
         "Override one living agent's name-tag color (ARGB). Highest precedence.");
     m.def("remove_agent_color",
         [](uint32_t agent_id) { return AgentRecolor::Instance().RemoveAgentColor(agent_id); }, py::arg("agent_id"));
+    m.def("set_agent_colors",
+        [](const std::vector<std::pair<uint32_t, uint32_t>>& rules) { AgentRecolor::Instance().SetAgentColors(rules); },
+        py::arg("rules"),
+        "Replace the WHOLE per-agent store with `rules` (list of (agent_id, argb) tuples). Ids not "
+        "present are dropped; allegiance rules are untouched. The intended bulk path: Python filters the "
+        "agent array each data-phase pass and hands over the full matched set in one call.");
     m.def("set_allegiance_color",
         [](int allegiance, uint32_t argb) { AgentRecolor::Instance().SetAllegianceColor(allegiance, argb); },
         py::arg("allegiance"), py::arg("argb"),
@@ -56,6 +62,11 @@ PYBIND11_EMBEDDED_MODULE(PyAgentRecolor, m) {
         py::arg("agent_id"), py::arg("argb"), "Override one gadget's tag color by agent id. Highest precedence.");
     m.def("remove_gadget_color",
         [](uint32_t agent_id) { return AgentRecolor::Instance().RemoveGadgetColor(agent_id); }, py::arg("agent_id"));
+    m.def("set_gadget_colors",
+        [](const std::vector<std::pair<uint32_t, uint32_t>>& rules) { AgentRecolor::Instance().SetGadgetColors(rules); },
+        py::arg("rules"),
+        "Replace the WHOLE per-gadget store with `rules` (list of (agent_id, argb) tuples). The 'all "
+        "gadgets' color is untouched.");
     m.def("set_all_gadget_color",
         [](uint32_t argb) { AgentRecolor::Instance().SetAllGadgetColor(argb); }, py::arg("argb"),
         "Recolor every gadget name tag. Per-gadget rules still win.");
@@ -121,6 +132,14 @@ PYBIND11_EMBEDDED_MODULE(PyAgentRecolor, m) {
     });
 
     // ===================== Shared =====================
+    m.def("master_enable", []() { AgentRecolor::Instance().MasterEnable(); },
+        "Master switch ON: activate all recolor detours (agents, gadgets, items). Driven by the "
+        "per-account System Settings toggle.");
+    m.def("master_disable", []() { AgentRecolor::Instance().MasterDisable(); },
+        "Master switch OFF: deactivate all recolor detours so no detour code runs (zero overhead). "
+        "Rules and per-category gates are preserved.");
+    m.def("is_master_enabled", []() { return AgentRecolor::Instance().IsMasterEnabled(); });
+
     m.def("clear_all_rules", []() { AgentRecolor::Instance().ClearAllRules(); },
         "Drop every color rule across agents, gadgets, and items.");
 

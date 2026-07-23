@@ -115,6 +115,11 @@ public:
     bool IsHookInstalled() const;
     void SetAgentColor(uint32_t agent_id, uint32_t argb);
     bool RemoveAgentColor(uint32_t agent_id);
+    // Bulk replace: swap the WHOLE per-agent store to exactly `rules`
+    // (agent_id, argb). Python computes the full matched set each pass and hands
+    // it over in one call; ids not present are dropped. Allegiance rules are a
+    // separate store and are left untouched. Simpler than per-id set/remove.
+    void SetAgentColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules);
     void SetAllegianceColor(int allegiance, uint32_t argb);   // 1..6
     bool RemoveAllegianceColor(int allegiance);
     void ClearRules();
@@ -136,6 +141,9 @@ public:
     bool GadgetIsHookInstalled() const;
     void SetGadgetColor(uint32_t agent_id, uint32_t argb);
     bool RemoveGadgetColor(uint32_t agent_id);
+    // Bulk replace of the per-gadget store (see SetAgentColors). The "all
+    // gadgets" color is a separate flag and is left untouched.
+    void SetGadgetColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules);
     void SetAllGadgetColor(uint32_t argb);
     void ClearAllGadgetColor();
     void GadgetClearRules();
@@ -172,6 +180,15 @@ public:
     void OnItemGetTextData(void* view, uint32_t* name_tag);
 
     // ===== Shared =====
+    // Master hook switch (driven by the per-account System Settings toggle).
+    // Toggles the ACTUAL detours via EnableHooks/DisableHooks so an account with
+    // the feature off runs no detour code at all (zero overhead), independent of
+    // the per-category enable gates and the rule stores. Hooks are installed once
+    // at DLL init; this only flips their active state (default: enabled).
+    void MasterEnable();
+    void MasterDisable();
+    bool IsMasterEnabled() const;
+
     void ClearAllRules();  // all three categories
     Diagnostics GetDiagnostics() const;
     void ResetDiagnostics();
@@ -264,6 +281,7 @@ private:
     std::map<uint64_t, ColorEntry> item_color_cache_;
 
     std::atomic<bool> initialized_{false};
+    std::atomic<bool> master_enabled_{true};   // hooks active after install; master gate
     std::atomic<bool> agent_enabled_{false};
     std::atomic<bool> gadget_enabled_{false};
     std::atomic<bool> item_enabled_{false};
