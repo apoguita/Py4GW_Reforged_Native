@@ -352,8 +352,16 @@ IniFile& SettingsManager::Open(const std::string& name, SettingsScope scope) {
         // Legacy layout: settings/Global/<name>, shared by every account.
         document->Bind(process_manager::GetModuleDirectory() / "settings" / "Global" / sanitized);
     } else if (scope == SettingsScope::Root) {
-        // Project/module root, shared by every account (e.g. Py4GW.ini).
-        document->Bind(process_manager::GetModuleDirectory() / sanitized);
+        // Root scope is NOT reachable through Open(): there is deliberately no
+        // (name, scope) that binds to the bare project root, so a caller can
+        // never escape the settings/ jail this way. The single root file
+        // (Py4GW.ini) is served only by OpenPy4GWIni(), which hard-codes its
+        // name. Reaching here means an internal caller passed Root by mistake;
+        // redirect it into the jail (settings/Global) and log, never bind root.
+        Logger::Instance().LogError(
+            "Settings: Root scope is not openable by name ('" + sanitized +
+            "'); use OpenPy4GWIni() for the one root file. Redirected to settings/Global.");
+        document->Bind(process_manager::GetModuleDirectory() / "settings" / "Global" / sanitized);
     } else if (scope == SettingsScope::Account && System::Instance().HasAccountEmail()) {
         // Account anchor already resolved: bind (and load from disk) immediately
         // so a read right after Open() sees the file, matching the legacy
@@ -361,6 +369,27 @@ IniFile& SettingsManager::Open(const std::string& name, SettingsScope scope) {
         // once it resolves. Bind() is idempotent, so there is no double-bind.
         document->Bind(System::Instance().GetSettingsDirectory() / sanitized);
     }
+    return *document;
+}
+
+IniFile& SettingsManager::OpenPy4GWIni() {
+    // The one and only document permitted outside the settings/ jail, hard-wired
+    // to <module>/Py4GW.ini. The filename is a compile-time constant and there is
+    // no parameter to override it, so this accessor cannot be repurposed to write
+    // anywhere else - it is the deliberate, unbypassable exception (a cross-process
+    // contract with the external launcher, which is not injected and so cannot use
+    // the settings/ jail). Everything else must go through Open() (Account/Global).
+    static constexpr const char* kRootIniName = "Py4GW.ini";
+
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    for (auto& document : documents_) {
+        if (document->scope_ == SettingsScope::Root && document->name_ == kRootIniName) {
+            return *document;
+        }
+    }
+    auto& document = documents_.emplace_back(
+        std::unique_ptr<IniFile>(new IniFile(kRootIniName, SettingsScope::Root)));
+    document->Bind(process_manager::GetModuleDirectory() / kRootIniName);
     return *document;
 }
 

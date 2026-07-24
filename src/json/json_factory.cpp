@@ -461,8 +461,6 @@ JsonFile& JsonFactory::Open(const std::string& name, JsonScope scope) {
     const std::filesystem::path root = process_manager::GetModuleDirectory();
     if (scope == JsonScope::Global) {
         document->Bind(root / "json" / "Global" / sanitized);
-    } else if (scope == JsonScope::Root) {
-        document->Bind(root / sanitized);
     } else if (scope == JsonScope::Account && System::Instance().HasAccountEmail()) {
         document->Bind(root / "json" / System::Instance().GetAccountEmail() / sanitized);
     }

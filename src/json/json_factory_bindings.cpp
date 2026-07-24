@@ -21,10 +21,9 @@ PY4GW::JsonScope ParseScope(const std::string& scope) {
     if (scope == "account") {
         return PY4GW::JsonScope::Account;
     }
-    if (scope == "root") {
-        return PY4GW::JsonScope::Root;
-    }
-    throw py::value_error("scope must be \"account\", \"global\", or \"root\"");
+    // No "root" for JSON: every document lives under json/. The only root-level
+    // exception in the whole system is Py4GW.ini, which is INI-only.
+    throw py::value_error("scope must be \"account\" or \"global\"");
 }
 
 // Recursively convert an nlohmann::json value to a native Python object.

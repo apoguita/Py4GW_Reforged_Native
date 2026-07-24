@@ -74,7 +74,7 @@ void RunAutoexecOnce() {
         return;
     }
 
-    auto& ini = PY4GW::SettingsManager::Instance().Open("Py4GW.ini", PY4GW::SettingsScope::Root);
+    auto& ini = PY4GW::SettingsManager::Instance().OpenPy4GWIni();
     if (!ini.IsBound()) {
         return;
     }
@@ -157,7 +157,7 @@ std::string BuildDebugProbeReport(uint64_t probe_frame) {
         PY4GW::System::InCharacterSelectScreen() ? 1 : 0);
     append("settings_dir: %s", system.GetSettingsDirectory().string().c_str());
 
-    auto& ini = PY4GW::SettingsManager::Instance().Open("Py4GW.ini", PY4GW::SettingsScope::Root);
+    auto& ini = PY4GW::SettingsManager::Instance().OpenPy4GWIni();
     append("Py4GW.ini bound: %d  dirty: %d", ini.IsBound() ? 1 : 0, ini.IsDirty() ? 1 : 0);
     append("[console] show_full_console:    has=%d raw='%s'",
         ini.HasKey("console", "show_full_console") ? 1 : 0,

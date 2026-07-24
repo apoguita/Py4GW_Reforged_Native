@@ -257,7 +257,7 @@ void RenderLog(bool* show_console, bool* show_compact_console) {
         }
 
         ImGui::TableSetColumnIndex(4);
-        auto& ini = SettingsManager::Instance().Open("Py4GW.ini", SettingsScope::Root);
+        auto& ini = SettingsManager::Instance().OpenPy4GWIni();
         if (!g_auto_scroll_loaded && ini.IsBound()) {
             g_auto_scroll = ini.GetBool("console", "auto_scroll", g_auto_scroll);
             g_auto_scroll_loaded = true;

@@ -48,10 +48,14 @@ namespace PY4GW {
 //                                               then bound). Per-account prefs.
 //   Scope::Global  -> settings/Global/<name>   (bound immediately, shared by
 //                                               every account on the machine).
-//   Scope::Root    -> <name>                   (module/project root, shared;
-//                                               bound immediately). Reserved for
-//                                               core files that must live at the
-//                                               project root, e.g. Py4GW.ini.
+//   Scope::Root    -> <module>/Py4GW.ini       (the SINGLE file allowed outside
+//                                               the settings/ jail). INTERNAL
+//                                               ONLY: not selectable by name and
+//                                               not exposed to Python's scope
+//                                               argument. Reachable solely via
+//                                               OpenPy4GWIni(), which hard-codes
+//                                               the filename, so no (name, scope)
+//                                               can ever bind to the bare root.
 enum class SettingsScope {
     Account,
     Global,
@@ -166,10 +170,20 @@ public:
     static SettingsManager& Instance();
 
     // Return the process-wide document for (name, scope); the SAME (name, scope)
-    // always yields the SAME IniFile. `name` is sanitized to a bare filename.
-    // This is the one entry point for acquiring a document (Python's
-    // PySettings.settings() calls straight through to it).
+    // always yields the SAME IniFile. `name` is sanitized to a safe relative
+    // subpath under the scope's jail. Only Account and Global are openable by
+    // name - both resolve strictly under settings/. Passing Root here is a
+    // misuse: it is redirected into settings/Global and logged (see settings.cpp),
+    // never bound to the project root. This is the entry point Python's
+    // PySettings.settings() calls straight through to.
     IniFile& Open(const std::string& name, SettingsScope scope = SettingsScope::Account);
+
+    // The ONE document permitted outside the settings/ jail: <module>/Py4GW.ini.
+    // Hard-coded filename, no parameters - the only route to the project root, and
+    // therefore unbypassable. Used by the few internal callers that must share the
+    // launcher's root INI (autoexec, console, version). Python reaches it through
+    // PySettings.py4gw_ini(); it is intentionally the sole exception.
+    IniFile& OpenPy4GWIni();
 
     // Step once per frame from the runtime update loop. Two jobs: (1) bind any
     // account documents that were staged, now that the email anchor has resolved;

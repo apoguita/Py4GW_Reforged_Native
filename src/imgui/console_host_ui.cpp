@@ -45,7 +45,7 @@ void ApplyDefaultSurfaceFallback(System& system, IniFile& ini) {
 // Applies persisted console preferences once the account document binds,
 // then mirrors runtime changes back into [console] of Py4GW.ini.
 void SyncConsoleSettings(System& system) {
-    auto& ini = SettingsManager::Instance().Open("Py4GW.ini", SettingsScope::Root);
+    auto& ini = SettingsManager::Instance().OpenPy4GWIni();
 
     if (!g_settings_applied) {
         if (!ini.IsBound()) {

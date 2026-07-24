@@ -19,10 +19,10 @@ PY4GW::SettingsScope ParseScope(const std::string& scope) {
     if (scope == "account") {
         return PY4GW::SettingsScope::Account;
     }
-    if (scope == "root") {
-        return PY4GW::SettingsScope::Root;
-    }
-    throw py::value_error("scope must be \"account\", \"global\", or \"root\"");
+    // "root" is deliberately NOT accepted: the project root is not selectable by
+    // name (that would be a jail-escape surface). The one root file is reached
+    // only through the dedicated, path-less PySettings.py4gw_ini() accessor.
+    throw py::value_error("scope must be \"account\" or \"global\"");
 }
 
 // Flat keys land in the default section; "section/key" addresses one explicitly.
@@ -44,6 +44,14 @@ PYBIND11_EMBEDDED_MODULE(PySettings, m) {
         return &PY4GW::SettingsManager::Instance().Open(name, ParseScope(scope));
     }), py::arg("name"), py::arg("scope") = "account",
         "Bind to a named settings document; no open/close/save needed");
+
+    // The single sanctioned document outside the settings/ jail: <module>/Py4GW.ini.
+    // Takes no name - it can only ever be that one file, so it is not a jail-escape
+    // surface. This is the ONLY way Python can touch the project root.
+    m.def("py4gw_ini", []() {
+        return &PY4GW::SettingsManager::Instance().OpenPy4GWIni();
+    }, py::return_value_policy::reference,
+        "The one root-level INI (Py4GW.ini). Hard-coded, path-less, unbypassable.");
 
     // write: value type selected by overload. bool is registered before int
     // because Python bool is a subclass of int.

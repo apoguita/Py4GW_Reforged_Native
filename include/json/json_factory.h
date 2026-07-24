@@ -49,12 +49,12 @@ namespace PY4GW {
 //   Scope::Global  -> json/Global/<name>   (bound immediately, shared by every
 //                                           account/process; save is locked +
 //                                           journal-merged).
-//   Scope::Root    -> <name>               (module/project root, shared; bound
-//                                           immediately). Reserved for core files.
+// There is deliberately NO Root scope for JSON: every JSON document lives strictly
+// under json/, so no (name, scope) can ever bind outside the jail. The single
+// project-root file exception (Py4GW.ini) is INI-only (see settings.h).
 enum class JsonScope {
     Account,
-    Global,
-    Root
+    Global
 };
 
 // One JSON document, fully synchronized behind its own mutex. Instances are
