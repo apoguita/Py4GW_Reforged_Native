@@ -449,7 +449,7 @@ StoCHandlerArray:
 
 StoCHandler (12 bytes each):
   +0x00: uint32_t* packet_template
-  +0x04: uint32_t  template_size
+  +0x04: uint32_t  field_count   (count of uint32_t descriptors in packet_template, NOT a byte size)
   +0x08: StoCHandler_pt handler_func
 ```
 
