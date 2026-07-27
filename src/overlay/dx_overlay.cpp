@@ -117,7 +117,7 @@ DXOverlay& DXOverlay::Instance() {
 }
 
 namespace {
-// Wall-clock gap since the last Draw*3D before the class deactivates. Time-based (not
+// Wall-clock gap since the last Draw*3D before the pipeline deactivates. Time-based (not
 // world-pass count) so a slow/hitching frame can't prematurely trip it and flicker.
 // ~6 frames at 60fps: ample, only fires when drawing genuinely stops (hidden / closed).
 constexpr unsigned long kOccludedTimeoutMs = 100;
@@ -183,6 +183,75 @@ void DXOverlay::OccludedTick(IDirect3DDevice9* device) {
         }
     }
     m_draining = false;
+    // The fixed-function 3D draws appended vertices rather than submitting; send them now,
+    // one DrawPrimitiveUP per group instead of one per primitive.
+    FlushBatches(device);
+}
+
+void DXOverlay::BatchLine3D(const D3DVertex3D& a, const D3DVertex3D& b, bool use_occlusion) {
+    auto& dst = use_occlusion ? m_batch_lines_occluded : m_batch_lines_plain;
+    dst.push_back(a);
+    dst.push_back(b);
+}
+
+void DXOverlay::BatchTri3D(const D3DVertex3D& a, const D3DVertex3D& b, const D3DVertex3D& c,
+                           bool use_occlusion) {
+    auto& dst = use_occlusion ? m_batch_tris_occluded : m_batch_tris_plain;
+    dst.push_back(a);
+    dst.push_back(b);
+    dst.push_back(c);
+}
+
+void DXOverlay::FlushBatches(IDirect3DDevice9* device) {
+    const bool empty = m_batch_lines_occluded.empty() && m_batch_lines_plain.empty() &&
+                       m_batch_tris_occluded.empty() && m_batch_tris_plain.empty();
+    if (empty) {
+        return;
+    }
+    // clear() keeps the capacity, so the per-frame rebuild does not reallocate.
+    if (!device || !MapValidForDraw()) {
+        m_batch_lines_occluded.clear();
+        m_batch_lines_plain.clear();
+        m_batch_tris_occluded.clear();
+        m_batch_tris_plain.clear();
+        return;
+    }
+
+    Setup3DView();  // ONCE for every batched primitive, not once each
+    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+
+    // Occluded groups keep the depth state Setup3DView established (ZENABLE on, ZWRITE off).
+    if (!m_batch_lines_occluded.empty()) {
+        device->DrawPrimitiveUP(D3DPT_LINELIST,
+                                static_cast<UINT>(m_batch_lines_occluded.size() / 2),
+                                m_batch_lines_occluded.data(), sizeof(D3DVertex3D));
+    }
+    if (!m_batch_tris_occluded.empty()) {
+        device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+                                static_cast<UINT>(m_batch_tris_occluded.size() / 3),
+                                m_batch_tris_occluded.data(), sizeof(D3DVertex3D));
+    }
+
+    // Non-occluded groups: same single state change the per-primitive path used to make.
+    if (!m_batch_lines_plain.empty() || !m_batch_tris_plain.empty()) {
+        device->SetRenderState(D3DRS_ZENABLE, FALSE);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        if (!m_batch_lines_plain.empty()) {
+            device->DrawPrimitiveUP(D3DPT_LINELIST,
+                                    static_cast<UINT>(m_batch_lines_plain.size() / 2),
+                                    m_batch_lines_plain.data(), sizeof(D3DVertex3D));
+        }
+        if (!m_batch_tris_plain.empty()) {
+            device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+                                    static_cast<UINT>(m_batch_tris_plain.size() / 3),
+                                    m_batch_tris_plain.data(), sizeof(D3DVertex3D));
+        }
+    }
+
+    m_batch_lines_occluded.clear();
+    m_batch_lines_plain.clear();
+    m_batch_tris_occluded.clear();
+    m_batch_tris_plain.clear();
 }
 
 void DXOverlay::set_primitives(const std::vector<std::vector<GW::Vec2f>>& prims, D3DCOLOR draw_color) {
@@ -1193,27 +1262,17 @@ void DXOverlay::DrawLine3D(GW::Vec3f from, GW::Vec3f to, D3DCOLOR color, bool us
     IDirect3DDevice9* device = GW::render::GetDevice();
     if (!device || !MapValidForDraw()) return;
 
-    Setup3DView();
-    if (!use_occlusion) {
-        device->SetRenderState(D3DRS_ZENABLE, FALSE);
-        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    }
-
+    // State and submission are handled once by FlushBatches at the end of the drain.
     auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
 
     // Single segment: original behavior
     if (segments <= 1) {
-        D3DVertex3D v[2] = {
-            { from.x, from.y, -from.z, color },
-            { to.x,   to.y,   -to.z,   color }
-        };
-        device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-        device->DrawPrimitiveUP(D3DPT_LINELIST, 1, v, sizeof(D3DVertex3D));
+        BatchLine3D({ from.x, from.y, -from.z, color },
+                    { to.x,   to.y,   -to.z,   color }, use_occlusion);
         return;
     }
 
     // N segments: snap each segment's endpoints to ground using its own z-plane (midpoint z)
-    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
     for (int i = 0; i < segments; ++i) {
         float t0 = float(i) / float(segments);
         float t1 = float(i + 1) / float(segments);
@@ -1225,11 +1284,7 @@ void DXOverlay::DrawLine3D(GW::Vec3f from, GW::Vec3f to, D3DCOLOR color, bool us
         float z0 = overlay.findZ(x0, y0, 0) - floor_offset;
         float z1 = overlay.findZ(x1, y1, 0) - floor_offset;
 
-        D3DVertex3D seg[2] = {
-            { x0, y0, -z0, color },
-            { x1, y1, -z1, color }
-        };
-        device->DrawPrimitiveUP(D3DPT_LINELIST, 1, seg, sizeof(D3DVertex3D));
+        BatchLine3D({ x0, y0, -z0, color }, { x1, y1, -z1, color }, use_occlusion);
     }
 }
 
@@ -1357,13 +1412,8 @@ void DXOverlay::DrawPoly3D(GW::Vec3f center, float radius, D3DCOLOR color, int n
     }
     IDirect3DDevice9* device = GW::render::GetDevice();
     if (!device || !MapValidForDraw()) return;
-    Setup3DView();
-    if (!use_occlusion) {
-        device->SetRenderState(D3DRS_ZENABLE, FALSE);
-        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    }
+    // State and submission are handled once by FlushBatches at the end of the drain.
 
-    struct V { float x, y, z; D3DCOLOR c; };
     const float step = XM_2PI / numSegments;
 
     // Precompute ring points (XY); Z will be sampled per sub-segment
@@ -1376,8 +1426,6 @@ void DXOverlay::DrawPoly3D(GW::Vec3f center, float radius, D3DCOLOR color, int n
         float z = autoZ ? overlay.findZ(x, y, static_cast<uint32_t>(center.z)) : center.z; // base Z (not final)
         ring.push_back({ x, y, z });
     }
-
-    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 
     // For each edge, split into 'segments' and snap each small segment
     for (int i = 0; i < numSegments; ++i) {
@@ -1397,11 +1445,7 @@ void DXOverlay::DrawPoly3D(GW::Vec3f center, float radius, D3DCOLOR color, int n
             float z0 = overlay.findZ(x0, y0, static_cast<uint32_t>(zplane)) - floor_offset;
             float z1 = overlay.findZ(x1, y1, static_cast<uint32_t>(zplane)) - floor_offset;
 
-            V seg[2] = {
-                { x0, y0, -z0, color },
-                { x1, y1, -z1, color }
-            };
-            device->DrawPrimitiveUP(D3DPT_LINELIST, 1, seg, sizeof(V));
+            BatchLine3D({ x0, y0, -z0, color }, { x1, y1, -z1, color }, use_occlusion);
         }
     }
 }
@@ -1416,13 +1460,7 @@ void DXOverlay::DrawPolyFilled3D(GW::Vec3f center, float radius, D3DCOLOR color,
     }
     IDirect3DDevice9* device = GW::render::GetDevice();
     if (!device || !MapValidForDraw()) return;
-    Setup3DView();
-    if (!use_occlusion) {
-        device->SetRenderState(D3DRS_ZENABLE, FALSE);
-        device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    }
-
-    struct V { float x, y, z; D3DCOLOR c; };
+    // State and submission are handled once by FlushBatches at the end of the drain.
     const float step = XM_2PI / numSegments;
 
     // Precompute center Z (if requested)
@@ -1437,8 +1475,6 @@ void DXOverlay::DrawPolyFilled3D(GW::Vec3f center, float radius, D3DCOLOR color,
                          center.y + sinf(a) * radius,
                          center.z });
     }
-
-    device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 
     for (int i = 0; i < numSegments; ++i) {
         GW::Vec3f A = ring[i];
@@ -1460,12 +1496,9 @@ void DXOverlay::DrawPolyFilled3D(GW::Vec3f center, float radius, D3DCOLOR color,
             float zE0 = overlay.findZ(E0.x, E0.y, static_cast<uint32_t>(zplane)) - floor_offset;
             float zE1 = overlay.findZ(E1.x, E1.y, static_cast<uint32_t>(zplane)) - floor_offset;
 
-            V tri[3] = {
-                { center.x, center.y, -zCenter, color },
-                { E0.x,     E0.y,     -zE0,     color },
-                { E1.x,     E1.y,     -zE1,     color }
-            };
-            device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
+            BatchTri3D({ center.x, center.y, -zCenter, color },
+                       { E0.x,     E0.y,     -zE0,     color },
+                       { E1.x,     E1.y,     -zE1,     color }, use_occlusion);
         }
     }
 }

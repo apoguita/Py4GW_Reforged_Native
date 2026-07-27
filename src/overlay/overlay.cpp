@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -313,6 +315,31 @@ bool IsMapReady() {
     return GW::map::GetIsMapLoaded() && !GW::map::GetIsObserving() && instance_type != GW::Constants::InstanceType::Loading;
 }
 
+// findZ cache: (x, y) -> z. The map's geometry does not change while you are in it, so a
+// point is resolved once and reused. Cleared when the map id changes.
+//
+// The key truncates to whole units so points within the same unit square share an entry.
+// That is deliberate: ground height barely moves over one unit, the result only feeds
+// overlay drawing, and it turns near-misses (a marker's ring vertices, a slightly drifting
+// coordinate) into hits instead of fresh lookups.
+uint64_t ZKey(float x, float y) {
+    const uint32_t xi = static_cast<uint32_t>(static_cast<int32_t>(x));
+    const uint32_t yi = static_cast<uint32_t>(static_cast<int32_t>(y));
+    return (static_cast<uint64_t>(xi) << 32) | static_cast<uint64_t>(yi);
+}
+
+std::unordered_map<uint64_t, float>& ZCache() {
+    thread_local std::unordered_map<uint64_t, float> cache;
+    thread_local GW::Constants::MapID cached_map = static_cast<GW::Constants::MapID>(-1);
+
+    const GW::Constants::MapID map_id = GW::map::GetMapID();
+    if (map_id != cached_map) {
+        cached_map = map_id;
+        cache.clear();
+    }
+    return cache;
+}
+
 }  // namespace
 
 // ---------------- PUBLIC API ----------------
@@ -324,7 +351,15 @@ float Overlay::findZ(float x, float y, uint32_t /*zplane_hint*/, bool multi_plan
     if (multi_plane) {
         // Topmost surface across all planes -- independent of the player's plane,
         // so a fixed point stays on its slope/bridge no matter where the player is.
-        return ResolveTopZ(x, y, GetValidZPlanes());
+        auto& cache = ZCache();
+        const uint64_t key = ZKey(x, y);
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            return it->second;
+        }
+        const float z = ResolveTopZ(x, y, GetValidZPlanes());
+        cache[key] = z;
+        return z;
     }
 
     // Legacy: altitude at the player's plane.

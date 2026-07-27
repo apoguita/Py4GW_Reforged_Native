@@ -178,6 +178,27 @@ private:
         D3DCOLOR color;
     };
 
+    // Batched 3D geometry. During a drain the fixed-function 3D draws append vertices here
+    // instead of submitting, and FlushBatches issues ONE DrawPrimitiveUP per group at the
+    // end of OccludedTick. Submitting per primitive meant a Setup3DView plus a
+    // DrawPrimitiveUP - the slowest D3D9 path, since the driver copies the vertices and
+    // breaks the batch - for every line and every triangle, so a route's worth of markers
+    // was over a thousand submissions per world pass. This is how ImGui stays cheap while
+    // drawing far more: build one buffer, submit once.
+    //
+    // Split only by use_occlusion, because that is the only render state that differs
+    // between commands (depth test on vs off). Everything else Setup3DView establishes is
+    // common, so it runs once per flush rather than once per primitive.
+    std::vector<D3DVertex3D> m_batch_lines_occluded;
+    std::vector<D3DVertex3D> m_batch_lines_plain;
+    std::vector<D3DVertex3D> m_batch_tris_occluded;
+    std::vector<D3DVertex3D> m_batch_tris_plain;
+
+    void BatchLine3D(const D3DVertex3D& a, const D3DVertex3D& b, bool use_occlusion);
+    void BatchTri3D(const D3DVertex3D& a, const D3DVertex3D& b, const D3DVertex3D& c,
+                    bool use_occlusion);
+    void FlushBatches(IDirect3DDevice9* device);
+
     D3DCOLOR color = 0xFFFFFFFF;
     float world_zoom_x = 1.0f;
     float world_zoom_y = 1.0f;
