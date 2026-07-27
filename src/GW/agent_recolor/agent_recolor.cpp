@@ -547,6 +547,13 @@ bool AgentRecolor::RemoveItemAgentColor(uint32_t agent_id) {
     if (erased) RebuildItemSnapshotLocked();
     return erased;
 }
+void AgentRecolor::SetItemAgentColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    item_agent_rules_.clear();
+    for (const auto& r : rules)
+        item_agent_rules_[r.first] = r.second;
+    RebuildItemSnapshotLocked();
+}
 void AgentRecolor::SetItemIdColor(uint32_t item_id, uint32_t argb) {
     std::lock_guard<std::mutex> lock(mutex_);
     item_id_rules_[item_id] = argb;

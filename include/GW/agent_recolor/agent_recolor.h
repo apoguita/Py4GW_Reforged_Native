@@ -171,6 +171,12 @@ public:
     bool ItemIsHookInstalled() const;
     void SetItemAgentColor(uint32_t agent_id, uint32_t argb);
     bool RemoveItemAgentColor(uint32_t agent_id);
+    // Bulk replace of the per-item-agent store (see SetAgentColors). Ids not
+    // present are dropped; the item_id / model / name / type / rarity stores are
+    // separate and are left untouched. This is the delivery path for the marking
+    // feature: Python resolves the whole matched set each pass and hands over one
+    // already-decided color per agent.
+    void SetItemAgentColors(const std::vector<std::pair<uint32_t, uint32_t>>& rules);
     void SetItemIdColor(uint32_t item_id, uint32_t argb);
     bool RemoveItemIdColor(uint32_t item_id);
     void SetItemModelColor(uint32_t model_id, uint32_t argb);

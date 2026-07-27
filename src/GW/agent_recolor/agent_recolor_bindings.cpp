@@ -89,6 +89,12 @@ PYBIND11_EMBEDDED_MODULE(PyAgentRecolor, m) {
         py::arg("agent_id"), py::arg("argb"), "Recolor one ground-item instance by agent id (highest precedence).");
     m.def("remove_item_agent_color",
         [](uint32_t agent_id) { return AgentRecolor::Instance().RemoveItemAgentColor(agent_id); }, py::arg("agent_id"));
+    m.def("set_item_agent_colors",
+        [](const std::vector<std::pair<uint32_t, uint32_t>>& rules) { AgentRecolor::Instance().SetItemAgentColors(rules); },
+        py::arg("rules"),
+        "Replace the WHOLE per-item-agent store with `rules` (list of (agent_id, argb) tuples). Ids not "
+        "present are dropped; the item_id / model / name / type / rarity stores are untouched. The intended "
+        "bulk path for marking: Python resolves the full matched set each pass and hands it over in one call.");
     m.def("set_item_id_color",
         [](uint32_t item_id, uint32_t argb) { AgentRecolor::Instance().SetItemIdColor(item_id, argb); },
         py::arg("item_id"), py::arg("argb"), "Recolor by item id.");
