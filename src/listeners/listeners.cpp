@@ -13,6 +13,7 @@
 #include "listeners/memory_patch_listeners.h"
 #include "listeners/signet_capture_listener.h"
 #include "listeners/skill_filter_listener.h"
+#include "listeners/skip_campaign_prompt_listener.h"
 #include "GW/common/stoc.h"
 #include "GW/context/context.h"
 #include "GW/context/item.h"
@@ -159,6 +160,7 @@ std::vector<Listener*>& Registry() {
         &AutoOpenLockedChest(),
         &FactionDonateSkipName(),
         &KeepCurrentQuest(),
+        &SkipCampaignPrompt(),
     };
     return listeners;
 }

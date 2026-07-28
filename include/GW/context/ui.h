@@ -64,6 +64,17 @@ struct DialogButtonInfo {
     uint32_t skill_id;
 };
 
+// wparam of UIMessage::kPartyShowConfirmDialog. The party frame raises this for
+// client-side yes/no prompts (e.g. entering a mission with a character from
+// another campaign); prompt_enc_str identifies which prompt it is.
+// Deviation: GWCA spells the second field "prompt_identitifier"; the typo is not
+// carried over.
+struct PartyShowConfirmDialogInfo {
+    uint32_t ui_message_to_send_to_party_frame;
+    uint32_t prompt_identifier;
+    wchar_t* prompt_enc_str;
+};
+
 struct ChangeTargetUIMsg {
     uint32_t manual_target_id;
     uint32_t h0008;

@@ -289,7 +289,11 @@ void OnEnterChallengeMission_UIMessage(PY4GW::HookStatus* status, ui::UIMessage 
     if (status && status->blocked) {
         return;
     }
-    if (g_enter_challenge_mission_original && wparam) {
+    // NOTE: do not guard on `wparam` being non-null. identifier == 0 is a valid
+    // call (the client re-drives the enter flow with 0 after a confirmation
+    // prompt, e.g. entering a mission with an off-campaign character), and
+    // dropping it leaves the enter timer un-started. Parity with GWCA MapMgr.
+    if (g_enter_challenge_mission_original) {
         g_enter_challenge_mission_original(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(wparam)));
     }
 }
