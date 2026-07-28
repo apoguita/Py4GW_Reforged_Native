@@ -253,8 +253,19 @@ bool Hero::FlagHero(uint32_t idx) {
 //  PetInfo implementation
 // ═══════════════════════════════════════════════════════════════════
 
-PetInfo::PetInfo(uint32_t owner) : owner_agent_id(owner) {
-    // Minimal: just store owner. Legacy filled from GW context.
+PetInfo::PetInfo(uint32_t owner) {
+    // Parity with legacy py_party.h PetInfo(uint32_t): fill from the GW world
+    // context, leave every field zeroed when the owner has no pet.
+    GW::Context::PetInfo* pet = GW::party::get_pet_info(owner);
+    if (!pet) return;
+
+    agent_id = pet->agent_id;
+    owner_agent_id = pet->owner_agent_id;
+    pet_name = WideToStr(pet->pet_name);
+    model_file_id1 = pet->model_file_id1;
+    model_file_id2 = pet->model_file_id2;
+    behavior = static_cast<uint32_t>(pet->behavior);
+    locked_target_id = pet->locked_target_id;
 }
 
 // ═══════════════════════════════════════════════════════════════════
