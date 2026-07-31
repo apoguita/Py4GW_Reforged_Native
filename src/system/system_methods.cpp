@@ -185,6 +185,18 @@ bool System::InCharacterSelectScreen() {
     return ui_state == 2;
 }
 
+void System::LatchAccountAnchor(const std::string& email) {
+    {
+        std::lock_guard<std::mutex> lock(account_mutex_);
+        account_email_ = email;
+    }
+    account_email_set_.store(true);
+
+    std::error_code ec;
+    std::filesystem::create_directories(GetSettingsDirectory(), ec);
+    WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready: " + email);
+}
+
 void System::UpdateAccountAnchor() {
     if (account_email_set_.load()) {
         return;
@@ -192,30 +204,42 @@ void System::UpdateAccountAnchor() {
 
     if (GW::map::GetIsMapLoaded()) {
         const GW::Context::CharContext* char_context = GW::Context::GetCharContext();
-        if (!char_context || !char_context->player_email[0]) {
-            return;
-        }
-
-        std::string email;
-        for (const wchar_t ch : char_context->player_email) {
-            if (!ch) {
-                break;
+        if (char_context && char_context->player_email[0]) {
+            std::string email;
+            for (const wchar_t ch : char_context->player_email) {
+                if (!ch) {
+                    break;
+                }
+                email.push_back(ch > 0 && ch <= 0x7f ? static_cast<char>(ch) : '?');
             }
-            email.push_back(ch > 0 && ch <= 0x7f ? static_cast<char>(ch) : '?');
+            if (!email.empty()) {
+                LatchAccountAnchor(email);
+                return;
+            }
         }
-        if (email.empty()) {
+
+        // player_email stays empty for the lifetime of the process on some
+        // login paths (observed with a Steam-launched client whose account
+        // auto-logs in without ever going through the classic email/password
+        // screen). Without a fallback this loop retries forever and nothing
+        // Python-side (scripts, widgets, callbacks) ever runs, since py_ready
+        // in UpdateLoopStep() gates on HasAccountEmail(). Give the normal
+        // path a grace period first (so accounts that *do* populate
+        // player_email, just a little later than map-load, aren't short-
+        // circuited), then fall back to a per-process synthetic identity.
+        // Mirrors Player._hwnd_account_fallback() on the Python side, which
+        // already solves this exact problem for GetAccountEmail() there.
+        if (!map_loaded_since_tick_) {
+            map_loaded_since_tick_ = ::GetTickCount64();
+            return;
+        }
+        constexpr uint64_t kFallbackGraceMs = 5000;
+        if (::GetTickCount64() - map_loaded_since_tick_ < kFallbackGraceMs) {
             return;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(account_mutex_);
-            account_email_ = email;
-        }
-        account_email_set_.store(true);
-
-        std::error_code ec;
-        std::filesystem::create_directories(GetSettingsDirectory(), ec);
-        WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready: " + email);
+        const auto hwnd = reinterpret_cast<uintptr_t>(MemoryManager::GetGWWindowHandle());
+        LatchAccountAnchor(std::to_string(hwnd) + "@Py4GW");
         return;
     }
 

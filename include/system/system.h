@@ -92,6 +92,10 @@ private:
     // Legacy parity: console output echoes into the game chat while the full
     // console window is hidden.
     void MirrorToGameChat(const ConsoleMessage& entry);
+    // Shared by both the normal (player_email) and fallback (HWND) anchor
+    // paths in UpdateAccountAnchor(): latches account_email_, creates the
+    // per-account settings directory, and logs readiness.
+    void LatchAccountAnchor(const std::string& email);
 
     mutable std::mutex console_mutex_;
     std::vector<ConsoleMessage> console_messages_;
@@ -109,6 +113,11 @@ private:
     std::string account_email_;
     std::atomic<bool> account_email_set_{false};
     uint64_t last_enter_push_tick_ = 0;
+    // First tick UpdateAccountAnchor() observed a loaded map while still
+    // unanchored; 0 means "not observed yet". Used to grace-period the
+    // player_email wait before falling back to a synthetic per-process
+    // identity (see UpdateAccountAnchor()).
+    uint64_t map_loaded_since_tick_ = 0;
 };
 
 // Parity port of the legacy WindowCfg helper (legacy include/WindowCfg.h).
