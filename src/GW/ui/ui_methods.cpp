@@ -126,6 +126,8 @@ extern std::unordered_map<UIMessage, std::vector<UIMessageCallbackEntry>> g_ui_m
 extern std::unordered_map<UIMessage, std::vector<FrameUIMessageCallbackEntry>> g_frame_ui_message_callbacks;
 extern std::vector<CreateUIComponentCallbackEntry> g_create_ui_component_callbacks;
 extern bool g_open_links;
+extern std::atomic<bool> g_item_image_frame_pop_enabled;
+extern std::atomic<float> g_item_image_frame_pop_brightness;
 extern SetWindowVisibleFn g_set_window_visible_func;
 extern SetWindowPositionFn g_set_window_position_func;
 extern DrawOnCompassFn g_draw_on_compass_func;
@@ -824,6 +826,87 @@ bool TriggerFrameRedraw(Frame* frame) {
         return false;
     }
     return SendFrameUIMessage(frame, UIMessage::kRefreshContent, nullptr, nullptr);
+}
+
+bool IsItemImageFrameTintHookInstalled() {
+    return g_item_image_frame_tint_hook_installed.load();
+}
+
+bool IsItemImageFrameTintEnabled() {
+    return g_item_image_frame_tint_enabled.load();
+}
+
+void SetItemImageFrameTintEnabled(bool enabled) {
+    if (g_item_image_frame_tint_enabled.exchange(enabled) == enabled) {
+        return;
+    }
+
+    // Do not force a UI message here. The frame-message resolver is optional,
+    // and calling it from this path can reach a null game-side function. The
+    // next normal item-frame paint observes the new state and restores or
+    // reapplies the colour safely. Rules deliberately remain intact.
+}
+
+bool IsItemImageFramePopEnabled() {
+    return g_item_image_frame_pop_enabled.load();
+}
+
+void SetItemImageFramePopEnabled(bool enabled) {
+    g_item_image_frame_pop_enabled.store(enabled);
+}
+
+float GetItemImageFramePopBrightness() {
+    return g_item_image_frame_pop_brightness.load();
+}
+
+void SetItemImageFramePopBrightness(float brightness) {
+    g_item_image_frame_pop_brightness.store(std::clamp(brightness, 0.1f, 4.0f));
+}
+
+bool SetItemImageFrameTint(uint32_t frame_id, uint32_t argb) {
+    if (!frame_id) {
+        return false;
+    }
+
+    g_item_image_frame_tints[frame_id] = argb;
+    return true;
+}
+
+bool ClearItemImageFrameTint(uint32_t frame_id) {
+    if (!frame_id || g_item_image_frame_tints.erase(frame_id) == 0) {
+        return false;
+    }
+
+    return true;
+}
+
+bool SetItemImageTintByItemId(uint32_t item_id, uint32_t argb) {
+    if (!item_id) {
+        return false;
+    }
+    g_item_image_item_tints[item_id] = argb;
+    const auto frame = g_item_image_frame_by_item_id.find(item_id);
+    if (frame != g_item_image_frame_by_item_id.end()) {
+        g_item_image_frame_tints[frame->second] = argb;
+    }
+    return true;
+}
+
+bool ClearItemImageTintByItemId(uint32_t item_id) {
+    if (!item_id || g_item_image_item_tints.erase(item_id) == 0) {
+        return false;
+    }
+    const auto frame = g_item_image_frame_by_item_id.find(item_id);
+    if (frame != g_item_image_frame_by_item_id.end()) {
+        g_item_image_frame_tints.erase(frame->second);
+    }
+    return true;
+}
+
+void ClearItemImageFrameTints() {
+    g_item_image_frame_tints.clear();
+    g_item_image_item_tints.clear();
+    g_item_image_frame_by_item_id.clear();
 }
 
 bool SelectDropdownOption(Frame* frame, uint32_t value) {

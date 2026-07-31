@@ -2,7 +2,7 @@
   "namespace": "quest",
   "patterns": {
     "request_anchor": {
-      "pattern": "\\x85\\xC0\\x75\\x14\\x68\\x6D\\x10\\x00\\x00",
+      "pattern": "\\x85\\xF6\\x75\\x14\\x68\\xAF\\x10\\x00\\x00",
       "mask": "xxxxxxxxx",
       "offset": "0",
       "range": "0xFF",

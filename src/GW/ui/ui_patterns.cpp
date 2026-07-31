@@ -102,6 +102,11 @@ extern SetInGameShadowQualityFn g_set_in_game_shadow_quality_func;
 extern SetInGameUIScaleFn g_set_in_game_ui_scale_func;
 extern SetVolumeFn g_set_volume_func;
 extern SetMasterVolumeFn g_set_master_volume_func;
+extern ItemImageFramePaintFn g_item_image_frame_paint_func;
+extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
+extern GrModelSetColorFn g_gr_model_set_color_func;
+extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
+extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
 extern GetGraphicsRendererValueFn g_get_graphics_renderer_value_func;
 extern SetGraphicsRendererValueFn g_set_graphics_renderer_value_func;
 extern SetGameRendererModeFn g_set_game_renderer_mode_func;
@@ -237,6 +242,16 @@ bool ResolveCreateUiComponent() {
     CrashContextScope context("startup", "ui", "resolve_create_ui_component");
     return PY4GW::Patterns::Resolve("ui.create_ui_component_func", &g_create_ui_component_func) &&
         PY4GW::Patterns::Resolve("ui.destroy_ui_component_func", &g_destroy_ui_component_func);
+}
+
+bool ResolveItemImageFrameTint() {
+    CrashContextScope context("startup", "ui", "resolve_item_image_frame_tint");
+    // Only hook Paint.  CItemImageFrame's message dispatcher runs while
+    // frames are being destroyed/recreated and is not a stable interception
+    // point; Paint exposes the live item id and is sufficient for tinting.
+    const bool base = PY4GW::Patterns::Resolve("ui.item_image_frame_paint_func", &g_item_image_frame_paint_func) &&
+        PY4GW::Patterns::Resolve("ui.gr_model_set_color_func", &g_gr_model_set_color_func);
+    return base;
 }
 
 bool ResolveFrameNewSubclass() {

@@ -102,6 +102,7 @@ bool ResolveValidateAsyncDecode();
 bool ResolveTitleHelpers();
 bool ResolveDrawOnCompass();
 bool ResolveCreateUiComponent();
+bool ResolveItemImageFrameTint();
 bool ResolveFrameNewSubclass();
 bool ResolveTypedComponentPassthrough();
 bool ResolvePreferenceReaders();
@@ -151,6 +152,32 @@ extern TriggerTerrainRerenderFn g_trigger_terrain_rerender_func;
 extern SetInGameUIScaleFn g_set_in_game_ui_scale_func;
 extern SetVolumeFn g_set_volume_func;
 extern SetMasterVolumeFn g_set_master_volume_func;
+extern ItemImageFramePaintFn g_item_image_frame_paint_func;
+extern ItemImageFramePaintFn g_item_image_frame_paint_original;
+extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
+extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original;
+extern GrModelSetColorFn g_gr_model_set_color_func;
+extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
+extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
+extern std::atomic<bool> g_item_image_frame_tint_hook_installed;
+extern std::atomic<bool> g_item_image_frame_tint_enabled;
+extern std::atomic<bool> g_item_image_frame_pop_enabled;
+extern std::atomic<float> g_item_image_frame_pop_brightness;
+extern std::atomic<uint64_t> g_item_image_frame_paint_calls;
+extern std::atomic<uint64_t> g_item_image_frame_tint_matches;
+extern std::atomic<uint64_t> g_item_image_frame_model_hits;
+extern std::atomic<uint64_t> g_item_image_frame_color_calls;
+extern std::atomic<uint64_t> g_item_image_frame_icon_constant_calls;
+extern std::atomic<uint32_t> g_item_image_frame_material_constant_id;
+extern std::atomic<uint32_t> g_item_image_frame_last_frame_id;
+extern std::atomic<uintptr_t> g_item_image_frame_last_model;
+extern std::atomic<uint32_t> g_item_image_frame_last_item_id;
+extern std::atomic<uint64_t> g_item_image_frame_item_bindings;
+extern std::atomic<uint32_t> g_item_image_frame_last_bound_item_id;
+extern std::atomic<uint32_t> g_item_image_frame_last_bound_native_frame_id;
 extern uint32_t* g_command_line_number_buffer;
 extern GetFlagPreferenceFn g_get_command_line_flag_func;
 extern GetStringPreferenceFn g_get_command_line_string_func;
@@ -240,10 +267,12 @@ void __cdecl OnSendFrameUIMessageById(uint32_t frame_id, UIMessage message_id, v
 void __fastcall OnSendFrameUIMessage(GW::GWArray<UIInteractionCallback>* frame_callbacks, void*, UIMessage message_id, void* wparam, void* lparam) {
     PY4GW::HookBase::EnterHook();
     ++g_active_hooks;
-    if (!g_shutting_down && frame_callbacks) {
-        auto* frame = reinterpret_cast<Frame*>(reinterpret_cast<uintptr_t>(frame_callbacks) - 0xA8);
-        SendFrameUIMessage(frame, message_id, wparam, lparam);
-    } else if (g_send_frame_ui_message_original) {
+    // The callback array can outlive its Frame while inventory controls are
+    // being torn down.  Reconstructing Frame at callbacks-0xA8 and routing
+    // through SendFrameUIMessage then dereferences that stale object.  For
+    // game-originated messages, preserve the original call ABI exactly; the
+    // public SendFrameUIMessage API remains available for explicit callers.
+    if (g_send_frame_ui_message_original) {
         g_send_frame_ui_message_original(frame_callbacks, nullptr, message_id, wparam, lparam);
     }
     --g_active_hooks;
@@ -304,10 +333,112 @@ uint32_t __cdecl OnCreateUIComponent(uint32_t frame_id, uint32_t component_flags
     return result;
 }
 
+void __fastcall OnItemImageFramePaint(void* item_image_frame, void* edx, const void* paint_state) {
+    PY4GW::HookBase::EnterHook();
+    ++g_active_hooks;
+
+    // The original constructs/rebuilds the background model. Reapply the
+    // user-owned tint afterwards, while the model handle is current.
+    if (g_item_image_frame_paint_original) {
+        g_item_image_frame_paint_original(item_image_frame, edx, paint_state);
+    }
+
+    ++g_item_image_frame_paint_calls;
+    if (!g_shutting_down && item_image_frame) {
+        const auto base = reinterpret_cast<uintptr_t>(item_image_frame);
+        const uint32_t frame_id = *reinterpret_cast<const uint32_t*>(base + 0x04);
+        const uint32_t item_id = *reinterpret_cast<const uint32_t*>(base + 0x54);
+        void* background_model = *reinterpret_cast<void* const*>(base + 0x2C);
+        // The background/rating model at +0x2C is the stable tint target.
+        // The icon-model path is explicitly opt-in for staged testing; do
+        // not even read its handle unless the experimental toggle is on.
+        void* icon_model = g_item_image_frame_pop_enabled
+            ? *reinterpret_cast<void* const*>(base + 0x34)
+            : nullptr;
+        g_item_image_frame_last_frame_id = frame_id;
+        g_item_image_frame_last_item_id = item_id;
+        g_item_image_frame_last_model = reinterpret_cast<uintptr_t>(background_model);
+        g_item_image_frame_last_icon_model = reinterpret_cast<uintptr_t>(icon_model);
+        const auto frame_tint = g_item_image_frame_tints.find(frame_id);
+        const auto item_tint = g_item_image_item_tints.find(item_id);
+        // Prefer the concrete native frame binding, but allow the public
+        // item-id API to work without intercepting CItemImageFrame's message
+        // dispatcher.  The dispatcher hook was unsafe across inventory
+        // teardown/recreation; paint already exposes the current item id.
+        const uint32_t* tint_argb = frame_tint != g_item_image_frame_tints.end()
+            ? &frame_tint->second
+            : (item_tint != g_item_image_item_tints.end() ? &item_tint->second : nullptr);
+        if (tint_argb) {
+            ++g_item_image_frame_tint_matches;
+        }
+        if (background_model) {
+            ++g_item_image_frame_model_hits;
+        }
+        if (icon_model) {
+            ++g_item_image_frame_icon_model_hits;
+        }
+        if (g_item_image_frame_tint_enabled && g_gr_model_set_color_func && tint_argb && background_model) {
+            ++g_item_image_frame_color_calls;
+            g_gr_model_set_color_func(background_model, tint_argb);
+        }
+        // Stage 1 experimental mode: apply the same validated ARGB setter to
+        // the icon model. Shader/material writes remain disabled until this
+        // survives inventory teardown/recreation.
+        if (g_item_image_frame_tint_enabled && g_item_image_frame_pop_enabled &&
+            g_gr_model_set_color_func && tint_argb && icon_model) {
+            ++g_item_image_frame_icon_color_calls;
+            g_gr_model_set_color_func(icon_model, tint_argb);
+        }
+    }
+
+    --g_active_hooks;
+    PY4GW::HookBase::LeaveHook();
+}
+
+void __cdecl OnItemImageFrameCtlMsgProc(const uint32_t* frame_msg_hdr, const uint32_t* message_data, void* out) {
+    PY4GW::HookBase::EnterHook();
+    ++g_active_hooks;
+
+    if (g_item_image_frame_ctl_msg_proc_original) {
+        g_item_image_frame_ctl_msg_proc_original(frame_msg_hdr, message_data, out);
+    }
+
+    // CItemImageFrame message 0x5b is the only point where the game gives us
+    // both the unique runtime item id (message_data[1]) and the concrete
+    // CItemImageFrame instance. Its +0x04 is precisely the native key later
+    // consumed by AddBackground, unlike Python's separately-managed UI id.
+    if (!g_shutting_down && frame_msg_hdr && message_data && frame_msg_hdr[1] == 0x5b && frame_msg_hdr[2]) {
+        const auto instance_slot = reinterpret_cast<void* const*>(static_cast<uintptr_t>(frame_msg_hdr[2]));
+        void* const item_image_frame = instance_slot ? *instance_slot : nullptr;
+        const uint32_t item_id = message_data[1];
+        if (item_image_frame && item_id) {
+            const uint32_t native_frame_id = *reinterpret_cast<const uint32_t*>(reinterpret_cast<uintptr_t>(item_image_frame) + 0x04);
+            if (native_frame_id) {
+                const auto previous = g_item_image_frame_by_item_id.find(item_id);
+                if (previous != g_item_image_frame_by_item_id.end() && previous->second != native_frame_id) {
+                    g_item_image_frame_tints.erase(previous->second);
+                }
+                g_item_image_frame_by_item_id[item_id] = native_frame_id;
+                ++g_item_image_frame_item_bindings;
+                g_item_image_frame_last_bound_item_id = item_id;
+                g_item_image_frame_last_bound_native_frame_id = native_frame_id;
+                const auto tint = g_item_image_item_tints.find(item_id);
+                if (tint != g_item_image_item_tints.end()) {
+                    g_item_image_frame_tints[native_frame_id] = tint->second;
+                }
+            }
+        }
+    }
+
+    --g_active_hooks;
+    PY4GW::HookBase::LeaveHook();
+}
+
 bool Init() {
     CrashContextScope context("startup", "ui", "init");
     ::InitializeCriticalSection(&g_callback_mutex);
     g_callback_mutex_initialized = true;
+    g_item_image_frame_tint_enabled = true;
 
     const auto try_resolve = [](const char* name, bool(*resolver)()) {
         if (!resolver()) {
@@ -333,6 +464,7 @@ bool Init() {
     try_resolve("ResolveTitleHelpers", &ResolveTitleHelpers);
     try_resolve("ResolveDrawOnCompass", &ResolveDrawOnCompass);
     try_resolve("ResolveCreateUiComponent", &ResolveCreateUiComponent);
+    try_resolve("ResolveItemImageFrameTint", &ResolveItemImageFrameTint);
     try_resolve("ResolveFrameNewSubclass", &ResolveFrameNewSubclass);
     try_resolve("ResolveTypedComponentPassthrough", &ResolveTypedComponentPassthrough);
     try_resolve("ResolvePreferenceReaders", &ResolvePreferenceReaders);
@@ -340,39 +472,28 @@ bool Init() {
     try_resolve("ResolveCommandLineFunctions", &ResolveCommandLineFunctions);
 
     if (g_send_ui_message_func) {
-        Logger::AssertHook(
-            "SendUIMessage_Func",
-            PY4GW::HookBase::CreateHook(
-                reinterpret_cast<void**>(&g_send_ui_message_func),
-                reinterpret_cast<void*>(&OnSendUIMessage),
-                reinterpret_cast<void**>(&g_send_ui_message_original)),
-            "ui");
+        // UI message dispatch has the same teardown-sensitive handle ABI as
+        // frame dispatch. Keep the resolved function for explicit calls, but
+        // do not detour the game's native message path.
+        g_send_ui_message_original = g_send_ui_message_func;
     } else {
-        Logger::Instance().LogWarning("SendUIMessage_Func is unavailable; UI message hooks will remain disabled.", "ui");
+        Logger::Instance().LogWarning("SendUIMessage_Func is unavailable; UI message calls will remain disabled.", "ui");
     }
 
+    // Do not detour frame-message dispatch. Its callback-array argument is
+    // also used during frame teardown, and the game can legitimately invoke
+    // it after the owning Frame has been destroyed. Keep the resolved entry
+    // point available for explicit, validated API calls only.
     if (g_send_frame_ui_message_by_id_func) {
-        Logger::AssertHook(
-            "SendFrameUIMessageById_Func",
-            PY4GW::HookBase::CreateHook(
-                reinterpret_cast<void**>(&g_send_frame_ui_message_by_id_func),
-                reinterpret_cast<void*>(&OnSendFrameUIMessageById),
-                reinterpret_cast<void**>(&g_send_frame_ui_message_by_id_original)),
-            "ui");
+        g_send_frame_ui_message_by_id_original = g_send_frame_ui_message_by_id_func;
     } else {
-        Logger::Instance().LogWarning("SendFrameUIMessageById_Func is unavailable; frame-by-id hooks will remain disabled.", "ui");
+        Logger::Instance().LogWarning("SendFrameUIMessageById_Func is unavailable; frame-by-id calls will remain disabled.", "ui");
     }
 
     if (g_send_frame_ui_message_func) {
-        Logger::AssertHook(
-            "SendFrameUIMessage_Func",
-            PY4GW::HookBase::CreateHook(
-                reinterpret_cast<void**>(&g_send_frame_ui_message_func),
-                reinterpret_cast<void*>(&OnSendFrameUIMessage),
-                reinterpret_cast<void**>(&g_send_frame_ui_message_original)),
-            "ui");
+        g_send_frame_ui_message_original = g_send_frame_ui_message_func;
     } else {
-        Logger::Instance().LogWarning("SendFrameUIMessage_Func is unavailable; frame message hooks will remain disabled.", "ui");
+        Logger::Instance().LogWarning("SendFrameUIMessage_Func is unavailable; frame message calls will remain disabled.", "ui");
     }
 
     if (g_create_ui_component_func) {
@@ -387,22 +508,31 @@ bool Init() {
         Logger::Instance().LogWarning("CreateUIComponent_Func is unavailable; UI component creation hooks will remain disabled.", "ui");
     }
 
+    if (g_item_image_frame_paint_func && g_gr_model_set_color_func) {
+        const bool paint_hook_created = Logger::AssertHook(
+            "CItemImageFrame_Paint_Func",
+            PY4GW::HookBase::CreateHook(
+                reinterpret_cast<void**>(&g_item_image_frame_paint_func),
+                reinterpret_cast<void*>(&OnItemImageFramePaint),
+                reinterpret_cast<void**>(&g_item_image_frame_paint_original)),
+            "ui");
+        if (paint_hook_created) {
+            g_item_image_frame_tint_hook_installed = true;
+        }
+    } else {
+        Logger::Instance().LogWarning("CItemImageFrame paint or GrModelSetColor is unavailable; item-frame tinting will remain disabled.", "ui");
+    }
+
     return true;
 }
 
 void EnableHooks() {
     CrashContextScope context("runtime", "ui", "enable_hooks");
-    if (g_send_ui_message_func) {
-        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_send_ui_message_func));
-    }
-    if (g_send_frame_ui_message_by_id_func) {
-        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_send_frame_ui_message_by_id_func));
-    }
-    if (g_send_frame_ui_message_func) {
-        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_send_frame_ui_message_func));
-    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_create_ui_component_func));
+    }
+    if (g_item_image_frame_paint_func) {
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_item_image_frame_paint_func));
     }
     RegisterUIMessageCallback(&g_open_template_hook, UIMessage::kOpenTemplate, &OnOpenTemplateUiMessage);
 }
@@ -410,17 +540,11 @@ void EnableHooks() {
 void DisableHooks() {
     CrashContextScope context("shutdown", "ui", "disable_hooks");
     RemoveUIMessageCallback(&g_open_template_hook);
-    if (g_send_ui_message_func) {
-        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_send_ui_message_func));
-    }
-    if (g_send_frame_ui_message_by_id_func) {
-        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_send_frame_ui_message_by_id_func));
-    }
-    if (g_send_frame_ui_message_func) {
-        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_send_frame_ui_message_func));
-    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_create_ui_component_func));
+    }
+    if (g_item_image_frame_paint_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_item_image_frame_paint_func));
     }
 }
 
@@ -434,17 +558,11 @@ void Exit() {
         ::LeaveCriticalSection(&g_callback_mutex);
     }
 
-    if (g_send_ui_message_func) {
-        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_send_ui_message_func));
-    }
-    if (g_send_frame_ui_message_by_id_func) {
-        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_send_frame_ui_message_by_id_func));
-    }
-    if (g_send_frame_ui_message_func) {
-        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_send_frame_ui_message_func));
-    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_create_ui_component_func));
+    }
+    if (g_item_image_frame_paint_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_item_image_frame_paint_func));
     }
 
     if (g_callback_mutex_initialized) {
@@ -472,6 +590,35 @@ void Exit() {
     g_draw_on_compass_func = nullptr;
     g_create_ui_component_func = nullptr;
     g_create_ui_component_original = nullptr;
+    g_item_image_frame_paint_func = nullptr;
+    g_item_image_frame_paint_original = nullptr;
+    g_item_image_frame_ctl_msg_proc_func = nullptr;
+    g_item_image_frame_ctl_msg_proc_original = nullptr;
+    g_gr_model_set_color_func = nullptr;
+    g_gr_model_set_material_constant_func = nullptr;
+    g_gr_material_constant_get_id_func = nullptr;
+    g_item_image_frame_tints.clear();
+    g_item_image_item_tints.clear();
+    g_item_image_frame_by_item_id.clear();
+    g_item_image_frame_tint_hook_installed = false;
+    g_item_image_frame_tint_enabled = true;
+    g_item_image_frame_pop_enabled = false;
+    g_item_image_frame_pop_brightness = 1.35f;
+    g_item_image_frame_paint_calls = 0;
+    g_item_image_frame_tint_matches = 0;
+    g_item_image_frame_model_hits = 0;
+    g_item_image_frame_color_calls = 0;
+    g_item_image_frame_icon_model_hits = 0;
+    g_item_image_frame_icon_color_calls = 0;
+    g_item_image_frame_icon_constant_calls = 0;
+    g_item_image_frame_material_constant_id = UINT32_MAX;
+    g_item_image_frame_last_frame_id = 0;
+    g_item_image_frame_last_model = 0;
+    g_item_image_frame_last_icon_model = 0;
+    g_item_image_frame_last_item_id = 0;
+    g_item_image_frame_item_bindings = 0;
+    g_item_image_frame_last_bound_item_id = 0;
+    g_item_image_frame_last_bound_native_frame_id = 0;
     g_destroy_ui_component_func = nullptr;
     g_frame_new_subclass_func = nullptr;
     g_typed_component_passthrough_func = nullptr;
@@ -568,6 +715,35 @@ TriggerTerrainRerenderFn g_trigger_terrain_rerender_func = nullptr;
 SetInGameUIScaleFn g_set_in_game_ui_scale_func = nullptr;
 SetVolumeFn g_set_volume_func = nullptr;
 SetMasterVolumeFn g_set_master_volume_func = nullptr;
+ItemImageFramePaintFn g_item_image_frame_paint_func = nullptr;
+ItemImageFramePaintFn g_item_image_frame_paint_original = nullptr;
+ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func = nullptr;
+ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original = nullptr;
+GrModelSetColorFn g_gr_model_set_color_func = nullptr;
+GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func = nullptr;
+GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func = nullptr;
+std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
+std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
+std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
+std::atomic<bool> g_item_image_frame_tint_hook_installed = false;
+std::atomic<bool> g_item_image_frame_tint_enabled = true;
+std::atomic<bool> g_item_image_frame_pop_enabled = false;
+std::atomic<float> g_item_image_frame_pop_brightness = 1.35f;
+std::atomic<uint64_t> g_item_image_frame_paint_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_tint_matches = 0;
+std::atomic<uint64_t> g_item_image_frame_model_hits = 0;
+std::atomic<uint64_t> g_item_image_frame_color_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_icon_model_hits = 0;
+std::atomic<uint64_t> g_item_image_frame_icon_color_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_icon_constant_calls = 0;
+std::atomic<uint32_t> g_item_image_frame_material_constant_id = UINT32_MAX;
+std::atomic<uint32_t> g_item_image_frame_last_frame_id = 0;
+std::atomic<uintptr_t> g_item_image_frame_last_model = 0;
+std::atomic<uintptr_t> g_item_image_frame_last_icon_model = 0;
+std::atomic<uint32_t> g_item_image_frame_last_item_id = 0;
+std::atomic<uint64_t> g_item_image_frame_item_bindings = 0;
+std::atomic<uint32_t> g_item_image_frame_last_bound_item_id = 0;
+std::atomic<uint32_t> g_item_image_frame_last_bound_native_frame_id = 0;
 uint32_t* g_command_line_number_buffer = nullptr;
 GetFlagPreferenceFn g_get_command_line_flag_func = nullptr;
 GetStringPreferenceFn g_get_command_line_string_func = nullptr;

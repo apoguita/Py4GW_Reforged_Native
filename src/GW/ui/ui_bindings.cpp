@@ -858,6 +858,107 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
             });
             return true;
         }, py::arg("frame_id"))
+        .def_static("is_item_frame_tint_hook_installed", []() {
+            return GW::ui::IsItemImageFrameTintHookInstalled();
+        })
+        .def_static("is_item_frame_tint_enabled", []() {
+            return GW::ui::IsItemImageFrameTintEnabled();
+        })
+        .def_static("is_item_frame_pop_enabled", []() {
+            return GW::ui::IsItemImageFramePopEnabled();
+        })
+        .def_static("get_item_frame_pop_brightness", []() {
+            return GW::ui::GetItemImageFramePopBrightness();
+        })
+        .def_static("get_item_frame_tint_diagnostics", []() {
+            py::dict diagnostics;
+            diagnostics["hook_installed"] = GW::ui::g_item_image_frame_tint_hook_installed.load();
+            diagnostics["enabled"] = GW::ui::g_item_image_frame_tint_enabled.load();
+            diagnostics["paint_calls"] = GW::ui::g_item_image_frame_paint_calls.load();
+            diagnostics["tint_matches"] = GW::ui::g_item_image_frame_tint_matches.load();
+            diagnostics["model_hits"] = GW::ui::g_item_image_frame_model_hits.load();
+            diagnostics["color_calls"] = GW::ui::g_item_image_frame_color_calls.load();
+            diagnostics["icon_model_hits"] = GW::ui::g_item_image_frame_icon_model_hits.load();
+            diagnostics["icon_color_calls"] = GW::ui::g_item_image_frame_icon_color_calls.load();
+            diagnostics["icon_constant_calls"] = GW::ui::g_item_image_frame_icon_constant_calls.load();
+            diagnostics["material_constant_id"] = GW::ui::g_item_image_frame_material_constant_id.load();
+            diagnostics["pop_enabled"] = GW::ui::IsItemImageFramePopEnabled();
+            diagnostics["pop_brightness"] = GW::ui::GetItemImageFramePopBrightness();
+            diagnostics["last_frame_id"] = GW::ui::g_item_image_frame_last_frame_id.load();
+            diagnostics["last_item_id"] = GW::ui::g_item_image_frame_last_item_id.load();
+            diagnostics["last_model"] = GW::ui::g_item_image_frame_last_model.load();
+            diagnostics["last_icon_model"] = GW::ui::g_item_image_frame_last_icon_model.load();
+            diagnostics["item_bindings"] = GW::ui::g_item_image_frame_item_bindings.load();
+            diagnostics["last_bound_item_id"] = GW::ui::g_item_image_frame_last_bound_item_id.load();
+            diagnostics["last_bound_native_frame_id"] = GW::ui::g_item_image_frame_last_bound_native_frame_id.load();
+            return diagnostics;
+        })
+        .def_static("set_item_frame_tint_enabled", [](bool enabled) {
+            GW::game_thread::Enqueue([enabled]() {
+                GW::ui::SetItemImageFrameTintEnabled(enabled);
+            });
+            return true;
+        }, py::arg("enabled"),
+        "Enable or disable item-frame tint application while keeping the configured tint rules.")
+        .def_static("set_item_frame_pop_enabled", [](bool enabled) {
+            GW::game_thread::Enqueue([enabled]() {
+                GW::ui::SetItemImageFramePopEnabled(enabled);
+            });
+            return true;
+        }, py::arg("enabled"),
+        "Enable or disable the optional shader-level icon brightness/saturation pass.")
+        .def_static("set_item_frame_pop_brightness", [](float brightness) {
+            GW::game_thread::Enqueue([brightness]() {
+                GW::ui::SetItemImageFramePopBrightness(brightness);
+            });
+            return true;
+        }, py::arg("brightness"),
+        "Set the optional shader-level icon brightness multiplier.")
+        .def_static("set_item_frame_tint_by_frame_id", [](uint32_t frame_id, uint32_t argb) {
+            GW::game_thread::Enqueue([frame_id, argb]() {
+                GW::ui::SetItemImageFrameTint(frame_id, argb);
+            });
+            return true;
+        }, py::arg("frame_id"), py::arg("argb"),
+        "Set a game-native ARGB tint on an inventory/equipment item frame.")
+        .def_static("set_item_tint_by_item_id", [](uint32_t item_id, uint32_t argb) {
+            GW::game_thread::Enqueue([item_id, argb]() {
+                GW::ui::SetItemImageTintByItemId(item_id, argb);
+            });
+            return true;
+        }, py::arg("item_id"), py::arg("argb"),
+        "Set a game-native ARGB tint by the stable inventory item id.")
+        .def_static("set_item_tint_by_model_id", [](uint32_t model_id, uint32_t argb) {
+            GW::game_thread::Enqueue([model_id, argb]() {
+                GW::ui::SetItemImageTintByItemId(model_id, argb);
+            });
+            return true;
+        }, py::arg("model_id"), py::arg("argb"),
+        "Set a game-native ARGB tint by the item-image model key.")
+        .def_static("clear_item_frame_tint_by_frame_id", [](uint32_t frame_id) {
+            GW::game_thread::Enqueue([frame_id]() {
+                GW::ui::ClearItemImageFrameTint(frame_id);
+            });
+            return true;
+        }, py::arg("frame_id"))
+        .def_static("clear_item_tint_by_item_id", [](uint32_t item_id) {
+            GW::game_thread::Enqueue([item_id]() {
+                GW::ui::ClearItemImageTintByItemId(item_id);
+            });
+            return true;
+        }, py::arg("item_id"))
+        .def_static("clear_item_tint_by_model_id", [](uint32_t model_id) {
+            GW::game_thread::Enqueue([model_id]() {
+                GW::ui::ClearItemImageTintByItemId(model_id);
+            });
+            return true;
+        }, py::arg("model_id"))
+        .def_static("clear_item_frame_tints", []() {
+            GW::game_thread::Enqueue([]() {
+                GW::ui::ClearItemImageFrameTints();
+            });
+            return true;
+        })
         .def_static("add_frame_ui_interaction_callback_by_frame_id", [](uint32_t frame_id, uintptr_t callback_address, uintptr_t wparam) {
             GW::game_thread::Enqueue([frame_id, callback_address, wparam]() {
                 GW::ui::AddFrameUIInteractionCallback(

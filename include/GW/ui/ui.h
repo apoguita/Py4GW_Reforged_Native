@@ -36,6 +36,17 @@ namespace GW::Context {
 namespace GW::ui {
     using UIMessage = Constants::UIMessage;
 
+    // Native paint path for a game-owned inventory/equipment item slot.
+    // The original target is __thiscall (ECX=this, one stack argument); the
+    // fastcall-shaped alias is required by the detour trampoline.
+    using ItemImageFramePaintFn = void(__fastcall*)(void* item_image_frame, void* edx, const void* paint_state);
+    // Frame message dispatcher for CItemImageFrame. Message 0x5b assigns the
+    // runtime inventory item id to a concrete native item-frame instance.
+    using ItemImageFrameCtlMsgProcFn = void(__cdecl*)(const uint32_t* frame_msg_hdr, const uint32_t* message_data, void* out);
+    using GrModelSetColorFn = void(__cdecl*)(void* model, const uint32_t* argb);
+    using GrModelSetMaterialConstantFn = void(__cdecl*)(void* model, uint32_t submodel_index, uint32_t constant_id, const float* coord4f);
+    using GrMaterialConstantGetIdFn = uint32_t(__cdecl*)(const char* name);
+
     enum WindowID : uint32_t {
         WindowID_Dialogue1 = 0x0,
         WindowID_Dialogue2 = 0x1,
@@ -690,6 +701,56 @@ using CreateUIComponentCallback = std::function<void(CreateUIComponentPacket*)>;
 
 bool Initialize();
 void Shutdown();
+
+// CItemImageFrame paint/model-colour symbols, resolved from offsets/ui.json.
+// The pointers are owned by the UI module because this is a game UI-control
+// paint path, not a generic renderer surface.
+extern ItemImageFramePaintFn g_item_image_frame_paint_func;
+extern ItemImageFramePaintFn g_item_image_frame_paint_original;
+extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
+extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original;
+    extern GrModelSetColorFn g_gr_model_set_color_func;
+    extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
+    extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
+// User rules are keyed by unique runtime item id; the dispatcher hook keeps
+// this mapping in sync with the native frame id used by AddBackground.
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
+extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
+extern std::atomic<bool> g_item_image_frame_tint_hook_installed;
+extern std::atomic<bool> g_item_image_frame_tint_enabled;
+extern std::atomic<uint64_t> g_item_image_frame_paint_calls;
+extern std::atomic<uint64_t> g_item_image_frame_tint_matches;
+extern std::atomic<uint64_t> g_item_image_frame_model_hits;
+extern std::atomic<uint64_t> g_item_image_frame_color_calls;
+extern std::atomic<uint64_t> g_item_image_frame_icon_model_hits;
+    extern std::atomic<uint64_t> g_item_image_frame_icon_color_calls;
+    extern std::atomic<uint64_t> g_item_image_frame_icon_constant_calls;
+    extern std::atomic<uint32_t> g_item_image_frame_material_constant_id;
+extern std::atomic<uint32_t> g_item_image_frame_last_frame_id;
+extern std::atomic<uintptr_t> g_item_image_frame_last_model;
+extern std::atomic<uintptr_t> g_item_image_frame_last_icon_model;
+extern std::atomic<uint32_t> g_item_image_frame_last_item_id;
+extern std::atomic<uint64_t> g_item_image_frame_item_bindings;
+extern std::atomic<uint32_t> g_item_image_frame_last_bound_item_id;
+extern std::atomic<uint32_t> g_item_image_frame_last_bound_native_frame_id;
+
+bool ResolveItemImageFrameTint();
+bool IsItemImageFrameTintHookInstalled();
+bool IsItemImageFrameTintEnabled();
+
+// Per-item-frame ARGB tint rules. Call these on the game thread; Python uses
+// the PyUIManager bindings below through the game-thread queue.
+bool SetItemImageFrameTint(uint32_t frame_id, uint32_t argb);
+bool ClearItemImageFrameTint(uint32_t frame_id);
+bool SetItemImageTintByItemId(uint32_t item_id, uint32_t argb);
+bool ClearItemImageTintByItemId(uint32_t item_id);
+void ClearItemImageFrameTints();
+    void SetItemImageFrameTintEnabled(bool enabled);
+    bool IsItemImageFramePopEnabled();
+    void SetItemImageFramePopEnabled(bool enabled);
+    float GetItemImageFramePopBrightness();
+    void SetItemImageFramePopBrightness(float brightness);
 
 Frame* GetRootFrame();
 Frame* GetFrameById(uint32_t frame_id);
