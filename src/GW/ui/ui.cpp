@@ -154,17 +154,29 @@ extern SetVolumeFn g_set_volume_func;
 extern SetMasterVolumeFn g_set_master_volume_func;
 extern ItemImageFramePaintFn g_item_image_frame_paint_func;
 extern ItemImageFramePaintFn g_item_image_frame_paint_original;
+extern ItemImageFrameContentAddFn g_item_image_frame_content_add_func;
+extern ItemImageFrameContentAddFn g_item_image_frame_content_add_original;
 extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
 extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original;
 extern GrModelSetColorFn g_gr_model_set_color_func;
+extern GrModelSetAlphaFn g_gr_model_set_alpha_func;
 extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
 extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
+extern std::atomic<bool> g_item_image_frame_material_setter_resolved;
+extern std::atomic<bool> g_item_image_frame_border_material_map_valid;
+extern std::atomic<uint32_t> g_item_image_frame_border_material_constant_count;
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
 extern std::atomic<bool> g_item_image_frame_tint_hook_installed;
+extern std::atomic<bool> g_item_image_frame_content_hook_installed;
 extern std::atomic<bool> g_item_image_frame_tint_enabled;
 extern std::atomic<bool> g_item_image_frame_pop_enabled;
+extern std::atomic<bool> g_item_image_frame_shader_pop_enabled;
+extern std::atomic<bool> g_item_image_frame_material_pop_enabled;
+extern std::atomic<uint64_t> g_item_image_frame_material_constant_calls;
+extern std::atomic<bool> g_item_image_frame_border_probe_enabled;
+extern std::atomic<uint64_t> g_item_image_frame_border_probe_calls;
 extern std::atomic<float> g_item_image_frame_pop_brightness;
 extern std::atomic<uint64_t> g_item_image_frame_paint_calls;
 extern std::atomic<uint64_t> g_item_image_frame_tint_matches;
@@ -172,6 +184,64 @@ extern std::atomic<uint64_t> g_item_image_frame_model_hits;
 extern std::atomic<uint64_t> g_item_image_frame_color_calls;
 extern std::atomic<uint64_t> g_item_image_frame_icon_constant_calls;
 extern std::atomic<uint32_t> g_item_image_frame_material_constant_id;
+
+// Validate the live border model's material-constant map without invoking any
+// renderer mutator.  The material setter previously crashed when called on a
+// stale/icon handle; an empty but structurally valid TArray is allowed because
+// the native setter is responsible for allocating the first constant entry.
+bool InspectBorderMaterialMap(
+    void* model_handle, uint32_t wanted_id, uint32_t& constant_count, bool& has_wanted_id) {
+    constant_count = 0;
+    has_wanted_id = false;
+    __try {
+    if (!model_handle || ::IsBadReadPtr(model_handle, sizeof(uintptr_t))) {
+        return false;
+    }
+    const auto model_object = *reinterpret_cast<uintptr_t*>(model_handle);
+    if (!model_object || ::IsBadReadPtr(reinterpret_cast<void*>(model_object), 0xA8)) {
+        return false;
+    }
+    const uint32_t submodel_count = *reinterpret_cast<const uint32_t*>(model_object + 0xA4);
+    const auto submodels = *reinterpret_cast<const uintptr_t*>(model_object + 0x9C);
+    if (submodel_count == 0 || submodel_count > 64 || !submodels ||
+        ::IsBadReadPtr(reinterpret_cast<void*>(submodels), static_cast<size_t>(submodel_count) * 0x7C)) {
+        return false;
+    }
+    if (*reinterpret_cast<const uint32_t*>(model_object + 0x0C) != 5U) {
+        return false;
+    }
+
+    const auto first_submodel = submodels;
+    if (::IsBadReadPtr(reinterpret_cast<void*>(first_submodel), 0x64)) {
+        return false;
+    }
+    const auto constants = *reinterpret_cast<const uintptr_t*>(first_submodel + 0x58);
+    constant_count = *reinterpret_cast<const uint32_t*>(first_submodel + 0x60);
+    const uint32_t capacity = *reinterpret_cast<const uint32_t*>(first_submodel + 0x5C);
+    if (constant_count > 1024 || capacity > 1024 || constant_count > capacity) {
+        constant_count = 0;
+        return false;
+    }
+    if (constant_count != 0 && (!constants ||
+        ::IsBadReadPtr(reinterpret_cast<void*>(constants), static_cast<size_t>(constant_count) * 0x14))) {
+        constant_count = 0;
+        return false;
+    }
+
+    for (uint32_t index = 0; index < constant_count; ++index) {
+        const auto entry = constants + static_cast<uintptr_t>(index) * 0x14;
+        if (*reinterpret_cast<const uint32_t*>(entry) == wanted_id) {
+            has_wanted_id = true;
+            break;
+        }
+    }
+    // An empty TArray is valid; the native setter allocates its first entry.
+    return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        constant_count = 0;
+        return false;
+    }
+}
 extern std::atomic<uint32_t> g_item_image_frame_last_frame_id;
 extern std::atomic<uintptr_t> g_item_image_frame_last_model;
 extern std::atomic<uint32_t> g_item_image_frame_last_item_id;
@@ -350,11 +420,9 @@ void __fastcall OnItemImageFramePaint(void* item_image_frame, void* edx, const v
         const uint32_t item_id = *reinterpret_cast<const uint32_t*>(base + 0x54);
         void* background_model = *reinterpret_cast<void* const*>(base + 0x2C);
         // The background/rating model at +0x2C is the stable tint target.
-        // The icon-model path is explicitly opt-in for staged testing; do
-        // not even read its handle unless the experimental toggle is on.
-        void* icon_model = g_item_image_frame_pop_enabled
-            ? *reinterpret_cast<void* const*>(base + 0x34)
-            : nullptr;
+        // The icon model is rebuilt by OnFrameContentAdd.  Do not touch or
+        // even read it from Paint: the old Paint-time write raced teardown.
+        void* icon_model = nullptr;
         g_item_image_frame_last_frame_id = frame_id;
         g_item_image_frame_last_item_id = item_id;
         g_item_image_frame_last_model = reinterpret_cast<uintptr_t>(background_model);
@@ -377,18 +445,193 @@ void __fastcall OnItemImageFramePaint(void* item_image_frame, void* edx, const v
         if (icon_model) {
             ++g_item_image_frame_icon_model_hits;
         }
-        if (g_item_image_frame_tint_enabled && g_gr_model_set_color_func && tint_argb && background_model) {
+        uint32_t brightened_argb = tint_argb ? *tint_argb : 0;
+        const uint32_t* render_argb = tint_argb;
+        if (g_item_image_frame_shader_pop_enabled && tint_argb) {
+            const float brightness = g_item_image_frame_pop_brightness.load();
+            const auto boost = [brightness](uint32_t channel) {
+                const auto value = static_cast<uint32_t>(static_cast<float>(channel) * brightness);
+                return value > 255U ? 255U : value;
+            };
+            brightened_argb = (*tint_argb & 0xFF000000U) |
+                (boost((*tint_argb >> 16) & 0xFFU) << 16) |
+                (boost((*tint_argb >> 8) & 0xFFU) << 8) |
+                boost(*tint_argb & 0xFFU);
+            render_argb = &brightened_argb;
+        }
+        if (g_item_image_frame_tint_enabled && g_gr_model_set_color_func && render_argb && background_model) {
             ++g_item_image_frame_color_calls;
-            g_gr_model_set_color_func(background_model, tint_argb);
+            g_gr_model_set_color_func(background_model, render_argb);
         }
-        // Stage 1 experimental mode: apply the same validated ARGB setter to
-        // the icon model. Shader/material writes remain disabled until this
-        // survives inventory teardown/recreation.
-        if (g_item_image_frame_tint_enabled && g_item_image_frame_pop_enabled &&
-            g_gr_model_set_color_func && tint_argb && icon_model) {
+        // FrameContentAdd publishes the model before our post-hook runs, and
+        // the UI layer may refresh model alpha while walking its frame list.
+        // Reapply the frame alpha at paint time, after that refresh, so the
+        // first checkbox affects the border that is actually drawn.
+        if (g_item_image_frame_pop_enabled && tint_argb && background_model && g_gr_model_set_alpha_func) {
+            g_gr_model_set_alpha_func(background_model, 0xFFU);
+            ++g_item_image_frame_background_alpha_calls;
+        }
+        // Diagnostic-only surface: force the concrete +0x2c border model to
+        // a fixed, unmistakable colour.  This deliberately bypasses item
+        // lookup, alpha, and shader experiments so we can prove whether this
+        // model is the visible border layer before pursuing material RE.
+        if (g_item_image_frame_border_probe_enabled && background_model && g_gr_model_set_color_func) {
+            constexpr uint32_t kBorderProbeArgb = 0xFFFF00FFU;
+            g_gr_model_set_color_func(background_model, &kBorderProbeArgb);
+            ++g_item_image_frame_border_probe_calls;
+        }
+    }
+
+    --g_active_hooks;
+    PY4GW::HookBase::LeaveHook();
+}
+
+void __fastcall OnItemImageFrameContentAdd(void* item_image_frame, void* edx, const void* content_msg) {
+    PY4GW::HookBase::EnterHook();
+    ++g_active_hooks;
+
+    if (g_item_image_frame_content_add_original) {
+        g_item_image_frame_content_add_original(item_image_frame, edx, content_msg);
+    }
+
+    // The original content-add routine closes +0x28/+0x34, rebuilds both
+    // models, and only then publishes them to the frame content layer.  This
+    // is the one safe point for both border and icon writes; the former Paint
+    // resolver was an anchor inside this same function and caused a duplicate
+    // MinHook registration.
+    ++g_item_image_frame_paint_calls;
+    // The shader registry may not be initialized during UI startup. Retry
+    // this read-only lookup once a live inventory frame is being rebuilt.
+    if (!g_item_image_frame_constant_id_resolved && g_gr_material_constant_get_id_func) {
+        const uint32_t constant_id = g_gr_material_constant_get_id_func("grConstColor");
+        g_item_image_frame_material_constant_id = constant_id;
+        g_item_image_frame_constant_id_resolved = constant_id != UINT32_MAX;
+    }
+    if (!g_shutting_down && g_item_image_frame_tint_enabled && item_image_frame) {
+        const auto base = reinterpret_cast<uintptr_t>(item_image_frame);
+        const uint32_t frame_id = *reinterpret_cast<const uint32_t*>(base + 0x04);
+        const uint32_t item_id = *reinterpret_cast<const uint32_t*>(base + 0x54);
+        const auto frame_tint = g_item_image_frame_tints.find(frame_id);
+        const auto item_tint = g_item_image_item_tints.find(item_id);
+        const uint32_t* tint_argb = frame_tint != g_item_image_frame_tints.end()
+            ? &frame_tint->second
+            : (item_tint != g_item_image_item_tints.end() ? &item_tint->second : nullptr);
+        // The dispatcher binding is intentionally optional because it is not
+        // safe across inventory teardown.  Once the content callback gives us
+        // both the item id and the live native frame id, retain that mapping so
+        // the paint hook can find the same tint on subsequent draws.
+        if (frame_tint == g_item_image_frame_tints.end() && item_tint != g_item_image_item_tints.end()) {
+            g_item_image_frame_tints[frame_id] = item_tint->second;
+        }
+        void* background_model = *reinterpret_cast<void* const*>(base + 0x2C);
+        void* icon_model = *reinterpret_cast<void* const*>(base + 0x34);
+        uint32_t border_constant_count = 0;
+        bool border_material_has_color = false;
+        if (tint_argb && background_model && g_item_image_frame_constant_id_resolved) {
+            const uint32_t constant_id = g_item_image_frame_material_constant_id.load();
+            const bool border_material_storage_valid = InspectBorderMaterialMap(
+                background_model, constant_id, border_constant_count, border_material_has_color);
+            g_item_image_frame_border_material_map_valid = border_material_storage_valid;
+            g_item_image_frame_border_material_constant_count = border_constant_count;
+            g_item_image_frame_material_constant_resolved = border_material_has_color;
+        }
+        g_item_image_frame_last_frame_id = frame_id;
+        g_item_image_frame_last_item_id = item_id;
+        g_item_image_frame_last_model = reinterpret_cast<uintptr_t>(background_model);
+        g_item_image_frame_last_icon_model = reinterpret_cast<uintptr_t>(icon_model);
+        if (tint_argb) {
+            ++g_item_image_frame_tint_matches;
+        }
+        if (background_model) {
+            ++g_item_image_frame_model_hits;
+        }
+        if (icon_model) {
+            ++g_item_image_frame_icon_model_hits;
+        }
+
+        uint32_t brightened_argb = tint_argb ? *tint_argb : 0;
+        if (g_item_image_frame_shader_pop_enabled && tint_argb) {
+            const float brightness = g_item_image_frame_pop_brightness.load();
+            const auto boost = [brightness](uint32_t channel) {
+                const auto value = static_cast<uint32_t>(static_cast<float>(channel) * brightness);
+                return value > 255U ? 255U : value;
+            };
+            brightened_argb = (*tint_argb & 0xFF000000U) |
+                (boost((*tint_argb >> 16) & 0xFFU) << 16) |
+                (boost((*tint_argb >> 8) & 0xFFU) << 8) |
+                boost(*tint_argb & 0xFFU);
+        }
+
+        if (tint_argb && g_gr_model_set_color_func && background_model) {
+            ++g_item_image_frame_color_calls;
+            g_gr_model_set_color_func(background_model, &brightened_argb);
+        }
+
+        // Shader/material experiment: update an existing grConstColor entry
+        // on the live border model only.  We never ask the game to allocate a
+        // missing entry, which was the source of the earlier teardown crashes.
+        if (g_item_image_frame_material_pop_enabled && tint_argb && background_model &&
+            g_item_image_frame_material_setter_resolved &&
+            g_item_image_frame_constant_id_resolved &&
+            g_item_image_frame_border_material_map_valid &&
+            g_gr_model_set_material_constant_func) {
+            const float brightness = std::clamp(g_item_image_frame_pop_brightness.load(), 0.1f, 8.0f);
+            const auto channel = [brightness](uint32_t value) {
+                return std::min(1.0f, (static_cast<float>(value) / 255.0f) * brightness);
+            };
+            const float material_color[4] = {
+                channel((*tint_argb >> 16) & 0xFFU),
+                channel((*tint_argb >> 8) & 0xFFU),
+                channel(*tint_argb & 0xFFU),
+                1.0f,
+            };
+            g_gr_model_set_material_constant_func(
+                background_model, 0, g_item_image_frame_material_constant_id.load(), material_color);
+            ++g_item_image_frame_material_constant_calls;
+        }
+
+        // Option 1 targets the frame/border model.  The game normally leaves
+        // this model at the tint alpha supplied by the UI material; forcing
+        // the model alpha to 0xFF makes the requested colour fully opaque
+        // without drawing an overlay over tooltips.
+        if (g_item_image_frame_pop_enabled && tint_argb && background_model && g_gr_model_set_alpha_func) {
+            g_gr_model_set_alpha_func(background_model, 0xFFU);
+            ++g_item_image_frame_background_alpha_calls;
+        }
+
+        // Diagnostic-only selected-item probe.  Restrict it to a frame that
+        // already has an explicit tint rule; never paint every inventory
+        // border.  When disabled, the normal tint write above restores the
+        // selected model on the next content rebuild.
+        if (g_item_image_frame_border_probe_enabled && tint_argb && background_model && g_gr_model_set_color_func) {
+            constexpr uint32_t kBorderProbeArgb = 0xFFFF00FFU;
+            g_gr_model_set_color_func(background_model, &kBorderProbeArgb);
+            ++g_item_image_frame_border_probe_calls;
+        }
+
+        // Option 2 uses the same safe, freshly-created icon handle for a
+        // direct model colour write.  The material-constant write below is
+        // retained as a separate shader experiment; either path can be
+        // diagnosed without touching stale Paint-time handles.
+        if (g_item_image_frame_shader_pop_enabled && tint_argb && icon_model && g_gr_model_set_color_func) {
+            g_gr_model_set_color_func(icon_model, &brightened_argb);
             ++g_item_image_frame_icon_color_calls;
-            g_gr_model_set_color_func(icon_model, tint_argb);
         }
+
+        // The stock path uses 0xC0 for ordinary item icons.  Raise only the
+        // icon alpha (never the border) when the experimental icon-pop mode
+        // is enabled.  This is a validated renderer API call and directly
+        // addresses the opacity that makes the texture look washed out.
+        if (g_item_image_frame_shader_pop_enabled && tint_argb && icon_model && g_gr_model_set_alpha_func) {
+            g_gr_model_set_alpha_func(icon_model, 0xFFU);
+            ++g_item_image_frame_icon_alpha_calls;
+        }
+
+        // The material-constant ABI is now known (__thiscall), but the
+        // CItemImageFrame +0x34 icon model has no initialized constant map.
+        // Calling the setter therefore reaches grint.h's `ptr` assertion.
+        // Keep this path disabled until the icon's actual material handle is
+        // identified; direct model colour remains safe.
     }
 
     --g_active_hooks;
@@ -508,19 +751,21 @@ bool Init() {
         Logger::Instance().LogWarning("CreateUIComponent_Func is unavailable; UI component creation hooks will remain disabled.", "ui");
     }
 
-    if (g_item_image_frame_paint_func && g_gr_model_set_color_func) {
-        const bool paint_hook_created = Logger::AssertHook(
-            "CItemImageFrame_Paint_Func",
+    if (g_item_image_frame_content_add_func && g_gr_model_set_color_func) {
+        const bool content_hook_created = Logger::AssertHook(
+            "CItemImageFrame_ContentAdd_Func",
             PY4GW::HookBase::CreateHook(
-                reinterpret_cast<void**>(&g_item_image_frame_paint_func),
-                reinterpret_cast<void*>(&OnItemImageFramePaint),
-                reinterpret_cast<void**>(&g_item_image_frame_paint_original)),
+                reinterpret_cast<void**>(&g_item_image_frame_content_add_func),
+                reinterpret_cast<void*>(&OnItemImageFrameContentAdd),
+                reinterpret_cast<void**>(&g_item_image_frame_content_add_original)),
             "ui");
-        if (paint_hook_created) {
+        if (content_hook_created) {
             g_item_image_frame_tint_hook_installed = true;
+            g_item_image_frame_content_hook_installed = true;
         }
     } else {
-        Logger::Instance().LogWarning("CItemImageFrame paint or GrModelSetColor is unavailable; item-frame tinting will remain disabled.", "ui");
+        Logger::Instance().LogWarning(
+            "CItemImageFrame content-add or GrModelSetColor is unavailable; item-frame tinting will remain disabled.", "ui");
     }
 
     return true;
@@ -534,6 +779,9 @@ void EnableHooks() {
     if (g_item_image_frame_paint_func) {
         PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_item_image_frame_paint_func));
     }
+    if (g_item_image_frame_content_add_func) {
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_item_image_frame_content_add_func));
+    }
     RegisterUIMessageCallback(&g_open_template_hook, UIMessage::kOpenTemplate, &OnOpenTemplateUiMessage);
 }
 
@@ -545,6 +793,9 @@ void DisableHooks() {
     }
     if (g_item_image_frame_paint_func) {
         PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_item_image_frame_paint_func));
+    }
+    if (g_item_image_frame_content_add_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_item_image_frame_content_add_func));
     }
 }
 
@@ -563,6 +814,9 @@ void Exit() {
     }
     if (g_item_image_frame_paint_func) {
         PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_item_image_frame_paint_func));
+    }
+    if (g_item_image_frame_content_add_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_item_image_frame_content_add_func));
     }
 
     if (g_callback_mutex_initialized) {
@@ -592,17 +846,30 @@ void Exit() {
     g_create_ui_component_original = nullptr;
     g_item_image_frame_paint_func = nullptr;
     g_item_image_frame_paint_original = nullptr;
+    g_item_image_frame_content_add_func = nullptr;
+    g_item_image_frame_content_add_original = nullptr;
     g_item_image_frame_ctl_msg_proc_func = nullptr;
     g_item_image_frame_ctl_msg_proc_original = nullptr;
     g_gr_model_set_color_func = nullptr;
+    g_gr_model_set_alpha_func = nullptr;
     g_gr_model_set_material_constant_func = nullptr;
     g_gr_material_constant_get_id_func = nullptr;
+    g_item_image_frame_material_setter_resolved = false;
+    g_item_image_frame_border_material_map_valid = false;
+    g_item_image_frame_border_material_constant_count = 0;
+    g_item_image_frame_alpha_resolved = false;
+    g_item_image_frame_material_constant_resolved = false;
+    g_item_image_frame_constant_id_resolved = false;
     g_item_image_frame_tints.clear();
     g_item_image_item_tints.clear();
     g_item_image_frame_by_item_id.clear();
     g_item_image_frame_tint_hook_installed = false;
+    g_item_image_frame_content_hook_installed = false;
     g_item_image_frame_tint_enabled = true;
     g_item_image_frame_pop_enabled = false;
+    g_item_image_frame_shader_pop_enabled = false;
+    g_item_image_frame_material_pop_enabled = false;
+    g_item_image_frame_border_probe_enabled = false;
     g_item_image_frame_pop_brightness = 1.35f;
     g_item_image_frame_paint_calls = 0;
     g_item_image_frame_tint_matches = 0;
@@ -611,6 +878,10 @@ void Exit() {
     g_item_image_frame_icon_model_hits = 0;
     g_item_image_frame_icon_color_calls = 0;
     g_item_image_frame_icon_constant_calls = 0;
+    g_item_image_frame_background_alpha_calls = 0;
+    g_item_image_frame_icon_alpha_calls = 0;
+    g_item_image_frame_border_probe_calls = 0;
+    g_item_image_frame_material_constant_calls = 0;
     g_item_image_frame_material_constant_id = UINT32_MAX;
     g_item_image_frame_last_frame_id = 0;
     g_item_image_frame_last_model = 0;
@@ -717,17 +988,30 @@ SetVolumeFn g_set_volume_func = nullptr;
 SetMasterVolumeFn g_set_master_volume_func = nullptr;
 ItemImageFramePaintFn g_item_image_frame_paint_func = nullptr;
 ItemImageFramePaintFn g_item_image_frame_paint_original = nullptr;
+ItemImageFrameContentAddFn g_item_image_frame_content_add_func = nullptr;
+ItemImageFrameContentAddFn g_item_image_frame_content_add_original = nullptr;
 ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func = nullptr;
 ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original = nullptr;
 GrModelSetColorFn g_gr_model_set_color_func = nullptr;
+GrModelSetAlphaFn g_gr_model_set_alpha_func = nullptr;
 GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func = nullptr;
 GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func = nullptr;
+std::atomic<bool> g_item_image_frame_alpha_resolved = false;
+std::atomic<bool> g_item_image_frame_material_constant_resolved = false;
+std::atomic<bool> g_item_image_frame_constant_id_resolved = false;
+std::atomic<bool> g_item_image_frame_material_setter_resolved = false;
+std::atomic<bool> g_item_image_frame_border_material_map_valid = false;
+std::atomic<uint32_t> g_item_image_frame_border_material_constant_count = 0;
 std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
 std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
 std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
 std::atomic<bool> g_item_image_frame_tint_hook_installed = false;
+std::atomic<bool> g_item_image_frame_content_hook_installed = false;
 std::atomic<bool> g_item_image_frame_tint_enabled = true;
 std::atomic<bool> g_item_image_frame_pop_enabled = false;
+std::atomic<bool> g_item_image_frame_shader_pop_enabled = false;
+std::atomic<bool> g_item_image_frame_material_pop_enabled = false;
+std::atomic<bool> g_item_image_frame_border_probe_enabled = false;
 std::atomic<float> g_item_image_frame_pop_brightness = 1.35f;
 std::atomic<uint64_t> g_item_image_frame_paint_calls = 0;
 std::atomic<uint64_t> g_item_image_frame_tint_matches = 0;
@@ -736,6 +1020,10 @@ std::atomic<uint64_t> g_item_image_frame_color_calls = 0;
 std::atomic<uint64_t> g_item_image_frame_icon_model_hits = 0;
 std::atomic<uint64_t> g_item_image_frame_icon_color_calls = 0;
 std::atomic<uint64_t> g_item_image_frame_icon_constant_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_background_alpha_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_icon_alpha_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_border_probe_calls = 0;
+std::atomic<uint64_t> g_item_image_frame_material_constant_calls = 0;
 std::atomic<uint32_t> g_item_image_frame_material_constant_id = UINT32_MAX;
 std::atomic<uint32_t> g_item_image_frame_last_frame_id = 0;
 std::atomic<uintptr_t> g_item_image_frame_last_model = 0;

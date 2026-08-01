@@ -127,6 +127,8 @@ extern std::unordered_map<UIMessage, std::vector<FrameUIMessageCallbackEntry>> g
 extern std::vector<CreateUIComponentCallbackEntry> g_create_ui_component_callbacks;
 extern bool g_open_links;
 extern std::atomic<bool> g_item_image_frame_pop_enabled;
+extern std::atomic<bool> g_item_image_frame_shader_pop_enabled;
+extern std::atomic<bool> g_item_image_frame_border_probe_enabled;
 extern std::atomic<float> g_item_image_frame_pop_brightness;
 extern SetWindowVisibleFn g_set_window_visible_func;
 extern SetWindowPositionFn g_set_window_position_func;
@@ -853,6 +855,34 @@ bool IsItemImageFramePopEnabled() {
 
 void SetItemImageFramePopEnabled(bool enabled) {
     g_item_image_frame_pop_enabled.store(enabled);
+}
+
+bool IsItemImageFrameBorderProbeEnabled() {
+    return g_item_image_frame_border_probe_enabled.load();
+}
+
+void SetItemImageFrameBorderProbeEnabled(bool enabled) {
+    g_item_image_frame_border_probe_enabled.store(enabled);
+}
+
+bool IsItemImageFrameShaderPopEnabled() {
+    return g_item_image_frame_shader_pop_enabled.load();
+}
+
+void SetItemImageFrameShaderPopEnabled(bool enabled) {
+    g_item_image_frame_shader_pop_enabled.store(enabled);
+}
+
+bool IsItemImageFrameMaterialPopEnabled() {
+    return g_item_image_frame_material_pop_enabled.load();
+}
+
+void SetItemImageFrameMaterialPopEnabled(bool enabled) {
+    g_item_image_frame_material_pop_enabled.store(enabled);
+}
+
+uint64_t GetItemImageFrameMaterialConstantCalls() {
+    return g_item_image_frame_material_constant_calls.load();
 }
 
 float GetItemImageFramePopBrightness() {

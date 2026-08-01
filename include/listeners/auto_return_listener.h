@@ -7,15 +7,16 @@
 #include "listeners/listeners.h"
 
 // "Automatically return to outpost on defeat", migrated from the legacy
-// GWToolbox GameSettings kPartyDefeated handler. Listens for the party-defeated
-// UI message and, if the local player is the party leader, returns the party to
-// the outpost.
+// GWToolbox GameSettings kPartyDefeated handler. Polls the party context's
+// defeated flag and, if the local player is the party leader in an explorable
+// instance, returns the party to the outpost. The party-defeated UI message is
+// retained as an early wake-up, but is not the authoritative trigger.
 //
 // Note: the reforged GW::party::return_to_outpost() clicks the button on the
 // "DlgRedirect" defeat dialog, which only exists once the game has shown that
-// dialog. So we register at POST altitude (after the game handler) and try
-// inline; if the dialog is not up yet we retry from the Update() tick (on the
-// game thread) for a short window. Opt-in: disabled by default.
+// dialog. So we register at POST altitude (after the game handler) and retry
+// from the Update() tick (on the game thread) until the map leaves the
+// explorable state. Opt-in: disabled by default.
 
 namespace PY4GW::listeners {
 
@@ -34,7 +35,6 @@ private:
     PY4GW::HookEntry party_defeated_entry_;
     PY4GW::Timer retry_timer_;
     bool pending_ = false;
-    int attempts_ = 0;
 };
 
 AutoReturnOnDefeatListener& AutoReturnOnDefeat();

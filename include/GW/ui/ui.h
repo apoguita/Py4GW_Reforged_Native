@@ -40,10 +40,21 @@ namespace GW::ui {
     // The original target is __thiscall (ECX=this, one stack argument); the
     // fastcall-shaped alias is required by the detour trampoline.
     using ItemImageFramePaintFn = void(__fastcall*)(void* item_image_frame, void* edx, const void* paint_state);
+    // CItemImageFrame content rebuild.  The native target is __thiscall with
+    // one stack argument; use the fastcall-shaped detour ABI here as above.
+    using ItemImageFrameContentAddFn = void(__fastcall*)(void* item_image_frame, void* edx, const void* content_msg);
     // Frame message dispatcher for CItemImageFrame. Message 0x5b assigns the
     // runtime inventory item id to a concrete native item-frame instance.
     using ItemImageFrameCtlMsgProcFn = void(__cdecl*)(const uint32_t* frame_msg_hdr, const uint32_t* message_data, void* out);
     using GrModelSetColorFn = void(__cdecl*)(void* model, const uint32_t* argb);
+    // GrModelSetAlpha validates an HGrModel handle and writes the per-
+    // submodel alpha byte.  The stock item-frame path uses it with 0xC0
+    // (disabled icon) or 0xFF (normal icon).
+    using GrModelSetAlphaFn = void(__cdecl*)(void* model, uint32_t alpha);
+    // The exported GrModelSetMaterialConstant wrapper is __cdecl.  It takes
+    // an HGrModel handle, resolves it, then enters the internal __thiscall
+    // CIGrModel::SetMaterialConstant implementation.  Calling the inner
+    // method directly would bypass handle validation and is unsafe.
     using GrModelSetMaterialConstantFn = void(__cdecl*)(void* model, uint32_t submodel_index, uint32_t constant_id, const float* coord4f);
     using GrMaterialConstantGetIdFn = uint32_t(__cdecl*)(const char* name);
 
@@ -707,17 +718,29 @@ void Shutdown();
 // paint path, not a generic renderer surface.
 extern ItemImageFramePaintFn g_item_image_frame_paint_func;
 extern ItemImageFramePaintFn g_item_image_frame_paint_original;
+extern ItemImageFrameContentAddFn g_item_image_frame_content_add_func;
+extern ItemImageFrameContentAddFn g_item_image_frame_content_add_original;
 extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
 extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_original;
     extern GrModelSetColorFn g_gr_model_set_color_func;
-    extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
-    extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
+    extern GrModelSetAlphaFn g_gr_model_set_alpha_func;
+    extern std::atomic<bool> g_item_image_frame_alpha_resolved;
+    extern std::atomic<uint64_t> g_item_image_frame_background_alpha_calls;
+    extern std::atomic<uint64_t> g_item_image_frame_icon_alpha_calls;
+extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
+extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
+extern std::atomic<bool> g_item_image_frame_material_setter_resolved;
+extern std::atomic<bool> g_item_image_frame_border_material_map_valid;
+extern std::atomic<uint32_t> g_item_image_frame_border_material_constant_count;
+extern std::atomic<bool> g_item_image_frame_material_constant_resolved;
+extern std::atomic<bool> g_item_image_frame_constant_id_resolved;
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_tints;
 // User rules are keyed by unique runtime item id; the dispatcher hook keeps
 // this mapping in sync with the native frame id used by AddBackground.
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_item_tints;
 extern std::unordered_map<uint32_t, uint32_t> g_item_image_frame_by_item_id;
 extern std::atomic<bool> g_item_image_frame_tint_hook_installed;
+extern std::atomic<bool> g_item_image_frame_content_hook_installed;
 extern std::atomic<bool> g_item_image_frame_tint_enabled;
 extern std::atomic<uint64_t> g_item_image_frame_paint_calls;
 extern std::atomic<uint64_t> g_item_image_frame_tint_matches;
@@ -727,6 +750,14 @@ extern std::atomic<uint64_t> g_item_image_frame_icon_model_hits;
     extern std::atomic<uint64_t> g_item_image_frame_icon_color_calls;
     extern std::atomic<uint64_t> g_item_image_frame_icon_constant_calls;
     extern std::atomic<uint32_t> g_item_image_frame_material_constant_id;
+extern std::atomic<bool> g_item_image_frame_shader_pop_enabled;
+// Guarded border-material experiment.  This is deliberately separate from
+// the legacy icon recolour toggle: it only calls GrModelSetMaterialConstant
+// after the live +0x2c model's constant map has been validated read-only.
+extern std::atomic<bool> g_item_image_frame_material_pop_enabled;
+extern std::atomic<uint64_t> g_item_image_frame_material_constant_calls;
+extern std::atomic<bool> g_item_image_frame_border_probe_enabled;
+extern std::atomic<uint64_t> g_item_image_frame_border_probe_calls;
 extern std::atomic<uint32_t> g_item_image_frame_last_frame_id;
 extern std::atomic<uintptr_t> g_item_image_frame_last_model;
 extern std::atomic<uintptr_t> g_item_image_frame_last_icon_model;
@@ -749,6 +780,13 @@ void ClearItemImageFrameTints();
     void SetItemImageFrameTintEnabled(bool enabled);
     bool IsItemImageFramePopEnabled();
     void SetItemImageFramePopEnabled(bool enabled);
+    bool IsItemImageFrameBorderProbeEnabled();
+    void SetItemImageFrameBorderProbeEnabled(bool enabled);
+    bool IsItemImageFrameShaderPopEnabled();
+    void SetItemImageFrameShaderPopEnabled(bool enabled);
+    bool IsItemImageFrameMaterialPopEnabled();
+    void SetItemImageFrameMaterialPopEnabled(bool enabled);
+    uint64_t GetItemImageFrameMaterialConstantCalls();
     float GetItemImageFramePopBrightness();
     void SetItemImageFramePopBrightness(float brightness);
 

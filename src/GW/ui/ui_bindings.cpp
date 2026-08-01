@@ -867,12 +867,19 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
         .def_static("is_item_frame_pop_enabled", []() {
             return GW::ui::IsItemImageFramePopEnabled();
         })
+        .def_static("is_item_frame_border_probe_enabled", []() {
+            return GW::ui::IsItemImageFrameBorderProbeEnabled();
+        })
+        .def_static("is_item_frame_shader_pop_enabled", []() {
+            return GW::ui::IsItemImageFrameShaderPopEnabled();
+        })
         .def_static("get_item_frame_pop_brightness", []() {
             return GW::ui::GetItemImageFramePopBrightness();
         })
         .def_static("get_item_frame_tint_diagnostics", []() {
             py::dict diagnostics;
             diagnostics["hook_installed"] = GW::ui::g_item_image_frame_tint_hook_installed.load();
+            diagnostics["content_hook_installed"] = GW::ui::g_item_image_frame_content_hook_installed.load();
             diagnostics["enabled"] = GW::ui::g_item_image_frame_tint_enabled.load();
             diagnostics["paint_calls"] = GW::ui::g_item_image_frame_paint_calls.load();
             diagnostics["tint_matches"] = GW::ui::g_item_image_frame_tint_matches.load();
@@ -880,9 +887,22 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
             diagnostics["color_calls"] = GW::ui::g_item_image_frame_color_calls.load();
             diagnostics["icon_model_hits"] = GW::ui::g_item_image_frame_icon_model_hits.load();
             diagnostics["icon_color_calls"] = GW::ui::g_item_image_frame_icon_color_calls.load();
+            diagnostics["background_alpha_calls"] = GW::ui::g_item_image_frame_background_alpha_calls.load();
+            diagnostics["icon_alpha_calls"] = GW::ui::g_item_image_frame_icon_alpha_calls.load();
+            diagnostics["alpha_resolved"] = GW::ui::g_item_image_frame_alpha_resolved.load();
             diagnostics["icon_constant_calls"] = GW::ui::g_item_image_frame_icon_constant_calls.load();
             diagnostics["material_constant_id"] = GW::ui::g_item_image_frame_material_constant_id.load();
+            diagnostics["material_constant_resolved"] = GW::ui::g_item_image_frame_material_constant_resolved.load();
+            diagnostics["constant_id_resolved"] = GW::ui::g_item_image_frame_constant_id_resolved.load();
+            diagnostics["material_setter_resolved"] = GW::ui::g_item_image_frame_material_setter_resolved.load();
+            diagnostics["border_material_map_valid"] = GW::ui::g_item_image_frame_border_material_map_valid.load();
+            diagnostics["border_material_constant_count"] = GW::ui::g_item_image_frame_border_material_constant_count.load();
+            diagnostics["material_pop_enabled"] = GW::ui::IsItemImageFrameMaterialPopEnabled();
+            diagnostics["material_constant_calls"] = GW::ui::GetItemImageFrameMaterialConstantCalls();
             diagnostics["pop_enabled"] = GW::ui::IsItemImageFramePopEnabled();
+            diagnostics["shader_pop_enabled"] = GW::ui::IsItemImageFrameShaderPopEnabled();
+            diagnostics["border_probe_enabled"] = GW::ui::IsItemImageFrameBorderProbeEnabled();
+            diagnostics["border_probe_calls"] = GW::ui::g_item_image_frame_border_probe_calls.load();
             diagnostics["pop_brightness"] = GW::ui::GetItemImageFramePopBrightness();
             diagnostics["last_frame_id"] = GW::ui::g_item_image_frame_last_frame_id.load();
             diagnostics["last_item_id"] = GW::ui::g_item_image_frame_last_item_id.load();
@@ -906,7 +926,31 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
             });
             return true;
         }, py::arg("enabled"),
-        "Enable or disable the optional shader-level icon brightness/saturation pass.")
+        "Enable or disable the staged icon ARGB recolor pass. Shader brightness is not active yet.")
+        .def_static("set_item_frame_border_probe_enabled", [](bool enabled) {
+            GW::game_thread::Enqueue([enabled]() {
+                GW::ui::SetItemImageFrameBorderProbeEnabled(enabled);
+            });
+            return true;
+        }, py::arg("enabled"),
+        "Force all live native item-frame border models to a fixed magenta diagnostic colour.")
+        .def_static("set_item_frame_shader_pop_enabled", [](bool enabled) {
+            GW::game_thread::Enqueue([enabled]() {
+                GW::ui::SetItemImageFrameShaderPopEnabled(enabled);
+            });
+            return true;
+        }, py::arg("enabled"),
+        "Enable or disable the experimental shader constant brightness pass.")
+        .def_static("is_item_frame_material_pop_enabled", []() {
+            return GW::ui::IsItemImageFrameMaterialPopEnabled();
+        })
+        .def_static("set_item_frame_material_pop_enabled", [](bool enabled) {
+            GW::game_thread::Enqueue([enabled]() {
+                GW::ui::SetItemImageFrameMaterialPopEnabled(enabled);
+            });
+            return true;
+        }, py::arg("enabled"),
+        "Enable the guarded border-material brightness experiment.")
         .def_static("set_item_frame_pop_brightness", [](float brightness) {
             GW::game_thread::Enqueue([brightness]() {
                 GW::ui::SetItemImageFramePopBrightness(brightness);

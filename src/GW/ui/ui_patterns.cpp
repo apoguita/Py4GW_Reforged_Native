@@ -105,6 +105,7 @@ extern SetMasterVolumeFn g_set_master_volume_func;
 extern ItemImageFramePaintFn g_item_image_frame_paint_func;
 extern ItemImageFrameCtlMsgProcFn g_item_image_frame_ctl_msg_proc_func;
 extern GrModelSetColorFn g_gr_model_set_color_func;
+extern GrModelSetAlphaFn g_gr_model_set_alpha_func;
 extern GrModelSetMaterialConstantFn g_gr_model_set_material_constant_func;
 extern GrMaterialConstantGetIdFn g_gr_material_constant_get_id_func;
 extern GetGraphicsRendererValueFn g_get_graphics_renderer_value_func;
@@ -246,11 +247,38 @@ bool ResolveCreateUiComponent() {
 
 bool ResolveItemImageFrameTint() {
     CrashContextScope context("startup", "ui", "resolve_item_image_frame_tint");
-    // Only hook Paint.  CItemImageFrame's message dispatcher runs while
-    // frames are being destroyed/recreated and is not a stable interception
-    // point; Paint exposes the live item id and is sufficient for tinting.
-    const bool base = PY4GW::Patterns::Resolve("ui.item_image_frame_paint_func", &g_item_image_frame_paint_func) &&
+    // CItemImageFrame's content rebuild is the single stable point where the
+    // background and icon models have just been recreated.  The old paint
+    // anchor resolves to this same function, so hooking both paths produces
+    // MH_ERROR_ALREADY_CREATED and suppresses the icon hook.
+    const bool base = PY4GW::Patterns::Resolve("ui.item_image_frame_content_add_func", &g_item_image_frame_content_add_func) &&
         PY4GW::Patterns::Resolve("ui.gr_model_set_color_func", &g_gr_model_set_color_func);
+
+    // Optional visual enhancement: the stock icon path explicitly clamps
+    // item icons to alpha 0xC0.  Resolve this independently so a future
+    // pattern drift cannot disable the working border tint.
+    const bool alpha_ok = PY4GW::Patterns::Resolve("ui.gr_model_set_alpha_func", &g_gr_model_set_alpha_func);
+    g_item_image_frame_alpha_resolved = alpha_ok;
+    if (!alpha_ok) {
+        Logger::Instance().LogWarning("[ui] Optional GrModelSetAlpha resolver failed; frame/icon opacity boost unavailable.", "ui");
+    }
+
+    // Resolve only the constant-ID lookup for diagnostics.  This wrapper is
+    // now anchored by its complete unique EXE byte sequence; the material
+    // setter remains disabled until a live border material map is proven.
+    const bool constant_id_ok = PY4GW::Patterns::Resolve(
+        "ui.gr_material_constant_get_id_func", &g_gr_material_constant_get_id_func);
+    const bool material_setter_ok = PY4GW::Patterns::Resolve(
+        "ui.gr_model_set_material_constant_func", &g_gr_model_set_material_constant_func);
+    g_item_image_frame_material_setter_resolved = material_setter_ok;
+    g_item_image_frame_material_constant_resolved = false;
+    g_item_image_frame_constant_id_resolved = false;
+    g_item_image_frame_material_constant_id = UINT32_MAX;
+    if (constant_id_ok && g_gr_material_constant_get_id_func) {
+        const uint32_t constant_id = g_gr_material_constant_get_id_func("grConstColor");
+        g_item_image_frame_material_constant_id = constant_id;
+        g_item_image_frame_constant_id_resolved = constant_id != UINT32_MAX;
+    }
     return base;
 }
 
