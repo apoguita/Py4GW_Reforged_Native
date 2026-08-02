@@ -1,0 +1,13 @@
+[mcp_servers.ghidra-mcp]
+command = 'C:\Users\Apo\AppData\Local\Programs\Python\Python313-32\python.exe'
+args = [
+    "-u",
+    'C:\Users\Apo\ghidra-mcp\bridge_mcp_ghidra.py',
+    "--transport",
+    "stdio",
+]
+
+[mcp_servers.ghidra-mcp.env]
+GHIDRA_MCP_URL = "http://127.0.0.1:8089"
+GHIDRA_DEBUGGER_URL = "http://127.0.0.1:8099"
+PYTHONIOENCODING = "utf-8"

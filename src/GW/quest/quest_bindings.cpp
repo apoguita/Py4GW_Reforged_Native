@@ -355,7 +355,13 @@ struct PyQuest {
         return result;
     }
     static bool RequestQuestInfo(int32_t quest_id, bool update_markers) {
-        return GW::quest::RequestQuestInfoId(static_cast<GW::Constants::QuestID>(quest_id), update_markers);
+        if (quest_id < 0) {
+            return false;
+        }
+        GW::game_thread::Enqueue([quest_id, update_markers]() {
+            GW::quest::RequestQuestInfoId(static_cast<GW::Constants::QuestID>(quest_id), update_markers);
+        });
+        return true;
     }
 };
 
@@ -436,7 +442,13 @@ PYBIND11_EMBEDDED_MODULE(PyQuest, m) {
     });
 
     m.def("request_quest_info", [](uint32_t quest_id, bool update_markers) -> bool {
-        return GW::quest::RequestQuestInfoId(static_cast<GW::Constants::QuestID>(quest_id), update_markers);
+        if (static_cast<int32_t>(quest_id) < 0) {
+            return false;
+        }
+        GW::game_thread::Enqueue([quest_id, update_markers]() {
+            GW::quest::RequestQuestInfoId(static_cast<GW::Constants::QuestID>(quest_id), update_markers);
+        });
+        return true;
     }, py::arg("quest_id"), py::arg("update_markers") = false);
 
     m.def("get_quest_entry_group_name", [](uint32_t quest_id) -> std::string {

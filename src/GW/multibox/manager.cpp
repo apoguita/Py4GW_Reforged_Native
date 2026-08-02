@@ -23,6 +23,7 @@
 #include "GW/context/world.h"
 
 #include "GW/common/constants/constants.h"
+#include "GW/render/render.h"
 
 #include <cstring>
 
@@ -260,9 +261,10 @@ int Manager::FindOrClaimAccountSlot(const std::string& email) {
     slot.IsSlotActive = true;
     slot.IsAccount = true;
     WriteWideField(slot.AccountEmail, kMaxEmailLen, email);
-    slot.Key.HWND = reinterpret_cast<uint64_t>(::GetActiveWindow());  // parity field; identity is the email
+    slot.Key.HWND = reinterpret_cast<uint64_t>(GW::render::GetWindowHandle());
     slot.Key.EntityType = 0;
     slot.Key.LocalIndex = 0;
+    View()->Keys[index] = slot.Key;
     return index;
 }
 
@@ -679,9 +681,10 @@ int Manager::FindOrClaimChildSlot(const std::string& email, uint32_t entity_type
     slot.SlotNumber = index;
     slot.IsSlotActive = true;
     WriteWideField(slot.AccountEmail, kMaxEmailLen, email);
-    slot.Key.HWND = reinterpret_cast<uint64_t>(::GetActiveWindow());
+    slot.Key.HWND = reinterpret_cast<uint64_t>(GW::render::GetWindowHandle());
     slot.Key.EntityType = entity_type;
     slot.Key.LocalIndex = local_id;
+    View()->Keys[index] = slot.Key;
     return index;
 }
 
@@ -697,6 +700,7 @@ void Manager::FillHeroPayload(AccountStruct& slot, const std::string& email, int
     WriteWideField(slot.AccountEmail, kMaxEmailLen, email);
     slot.Key.EntityType = 1;
     slot.Key.LocalIndex = hero.hero_id;
+    View()->Keys[slot_index] = slot.Key;
 
     FillAgentData(slot.AgentData, hero.agent_id, GW::skillbar::GetHeroSkillbar(hero_index));
     slot.AgentData.AgentID = hero.agent_id;
@@ -745,6 +749,7 @@ void Manager::FillPetPayload(AccountStruct& slot, const std::string& email, int 
     WriteWideField(slot.AccountEmail, kMaxEmailLen, email);
     slot.Key.EntityType = 2;
     slot.Key.LocalIndex = 0;
+    View()->Keys[slot_index] = slot.Key;
 
     FillAgentData(slot.AgentData, pet.agent_id, nullptr);
     slot.AgentData.AgentID = pet.agent_id;
@@ -824,6 +829,12 @@ void Manager::UpdateOwnAccount() {
         return;  // pool full; nothing we can do this frame
     }
 
+    AccountStruct& account_slot = View()->AccountData[slot_index];
+    account_slot.Key.HWND = reinterpret_cast<uint64_t>(GW::render::GetWindowHandle());
+    account_slot.Key.EntityType = 0;
+    account_slot.Key.LocalIndex = 0;
+    View()->Keys[slot_index] = account_slot.Key;
+
     // Zero the payload ONLY during a genuine map load/transition - that is the
     // single case the reader used to cover by losing its email and reading zeroes.
     // During normal play the slot is always filled.
@@ -837,7 +848,7 @@ void Manager::UpdateOwnAccount() {
     const bool gates_ok = GW::map::GetIsMapLoaded() &&
                           GW::map::GetInstanceType() != GW::Constants::InstanceType::Loading;
 
-    FillAccountPayload(View()->AccountData[slot_index], email, slot_index, gates_ok);
+    FillAccountPayload(account_slot, email, slot_index, gates_ok);
 
     // Heroes/pets are map-instance entities (recycled across map loads). Publish
     // them only when gates are met; otherwise they simply expire and are

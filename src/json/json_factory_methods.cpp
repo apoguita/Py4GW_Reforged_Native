@@ -368,6 +368,11 @@ bool JsonFile::Reload() {
     if (!bound_) {
         return false;
     }
+    // Autosave owns persistence for local changes. Do not replace a dirty
+    // in-memory document with disk contents before the next autosave tick.
+    if (dirty_) {
+        return false;
+    }
     root_ = json::object();
     const bool loaded = LoadLocked();
     dirty_ = false;
