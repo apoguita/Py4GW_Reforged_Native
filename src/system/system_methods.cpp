@@ -187,6 +187,31 @@ bool System::InCharacterSelectScreen() {
 }
 
 void System::UpdateAccountAnchor() {
+    // RELAY 094 follow-up: character-select auto-login must run
+    // unconditionally, every call, regardless of anchor state -- found
+    // live: a Steam-anchored account never got logged in at all, just sat
+    // at character-select. Root cause was this check used to live *after*
+    // the account_email_set_ guard below, sharing it with the ini/memory
+    // resolution paths. For a non-Steam account that guard only ever
+    // becomes true once GW::map::GetIsMapLoaded() (i.e. already well past
+    // character-select), so the guard being first never mattered there --
+    // but the ini branch below can resolve the anchor almost instantly,
+    // with no map-loaded dependency at all, often before character-select
+    // has even finished. Once that happened, this function returned at its
+    // very first line on every subsequent call, and the Enter-key push
+    // below it never ran again -- the client just sat there, never
+    // actually logging in. Moved to the top, unconditional: harmless once
+    // truly past character-select (InCharacterSelectScreen() reads false
+    // then, this becomes a no-op), and fixes the case where the anchor
+    // resolves before the character is ever actually selected.
+    if (InCharacterSelectScreen()) {
+        const uint64_t now = ::GetTickCount64();
+        if (now - last_enter_push_tick_ >= 2000) {
+            last_enter_push_tick_ = now;
+            KeyHandler().push_key(VK_RETURN);
+        }
+    }
+
     if (account_email_set_.load()) {
         return;
     }
@@ -251,16 +276,6 @@ void System::UpdateAccountAnchor() {
         std::filesystem::create_directories(GetSettingsDirectory(), ec);
         WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready: " + email);
         return;
-    }
-
-    // Not in a map yet: if we sit in character select, push Enter to log the
-    // selected character in, retrying until the map starts loading.
-    if (InCharacterSelectScreen()) {
-        const uint64_t now = ::GetTickCount64();
-        if (now - last_enter_push_tick_ >= 2000) {
-            last_enter_push_tick_ = now;
-            KeyHandler().push_key(VK_RETURN);
-        }
     }
 }
 
