@@ -10,6 +10,7 @@
 #include "GW/context/pregame.h"
 #include "GW/map/map.h"
 #include "GW/ui/ui.h"
+#include "settings/settings.h"
 #include "virtual_input/virtual_input.h"
 
 #include <algorithm>
@@ -188,6 +189,39 @@ bool System::InCharacterSelectScreen() {
 void System::UpdateAccountAnchor() {
     if (account_email_set_.load()) {
         return;
+    }
+
+    // RELAY 094: Steam-linked accounts have no email Py4GW can read from
+    // memory at all (char_context->player_email stays empty for them, Apo
+    // confirmed directly) -- resolve an ini-based anchor first, before and
+    // independently of the memory-based read below. Py4GW.ini is root-
+    // scoped and binds immediately (SettingsManager::OpenPy4GWIni(),
+    // confirmed directly against settings.cpp: it calls Bind() unconditionally
+    // at open time, unlike Account-scoped documents, which wait on this very
+    // anchor to resolve first) -- so this doesn't need GW::map::GetIsMapLoaded()
+    // at all, and can resolve before character-select even finishes.
+    //
+    // Additive only, not a replacement: every non-Steam account still falls
+    // through to the existing memory-based read unchanged below, since this
+    // only fires when the ini key is actually present and non-empty
+    // (launcher_core/gw1_launch.py's _write_account_anchor() only ever writes
+    // it when profile.use_steam_login and profile.steam_account_anchor are
+    // both set on the launcher side).
+    auto& root_ini = SettingsManager::Instance().OpenPy4GWIni();
+    if (root_ini.IsBound()) {
+        const std::string anchor = root_ini.GetString("settings", "account_anchor", "");
+        if (!anchor.empty()) {
+            {
+                std::lock_guard<std::mutex> lock(account_mutex_);
+                account_email_ = anchor;
+            }
+            account_email_set_.store(true);
+
+            std::error_code ec;
+            std::filesystem::create_directories(GetSettingsDirectory(), ec);
+            WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready (ini): " + anchor);
+            return;
+        }
     }
 
     if (GW::map::GetIsMapLoaded()) {
