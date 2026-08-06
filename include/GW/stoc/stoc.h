@@ -73,11 +73,16 @@ void RemovePostCallback(PY4GW::HookEntry* entry) {
     RemovePostCallback(Packet::StoC::Packet<T>::STATIC_HEADER, entry);
 }
 
-// Returns the resolved template size for a header from the live handler
-// table, or sizeof(PacketBase) when the header is out of range or the table
-// is not resolved. Exposed for consumers that need per-header packet sizes
-// (e.g. the packet sniffer) without re-scanning the handler table.
-uint32_t GetPacketSize(uint32_t header);
+// Returns the wire byte size of `packet` by walking the header's resolved
+// field template from the live handler table. The template's field_count is
+// a count of uint32_t field descriptors, not a byte size (a handler with N
+// template fields is not an N-byte packet), so fixed- and variable-width
+// fields (blob/string16/array8-16-32/nested-struct) are decoded individually
+// and their wire widths summed. Falls back to sizeof(PacketBase) when the
+// header is out of range, the table is not resolved, or the walk fails.
+// Exposed for consumers that need accurate per-header packet sizes (e.g. the
+// packet sniffer) without re-scanning the handler table.
+uint32_t GetPacketSize(uint32_t header, const Packet::StoC::PacketBase* packet);
 
 bool EmulatePacket(Packet::StoC::PacketBase* packet);
 
