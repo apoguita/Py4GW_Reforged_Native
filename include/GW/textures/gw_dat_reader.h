@@ -95,6 +95,7 @@ public:
 
     static bool IsDatTextureKey(const std::wstring& texture_key);
     static uint32_t ParseFileId(const std::wstring& texture_key);
+    static bool ReadDatFileById(uint32_t file_id, std::vector<uint8_t>* bytes_out, uint32_t stream_id = 0);
     static bool ReadDatFile(const wchar_t* file_hash, std::vector<uint8_t>* bytes_out, uint32_t stream_id = 0);
 
     // Resolve the game functions this reader needs (idempotent). Lazily invoked

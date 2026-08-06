@@ -132,6 +132,31 @@ bool CloseRecObjNoFault(RecObj* rec) {
     return false;
 }
 
+bool ReadDatRecord(RecObj* rec, std::vector<uint8_t>* bytes_out) {
+    if (!rec || !bytes_out) {
+        return false;
+    }
+
+    int size = 0;
+    const auto bytes = ReadFileBufferNoFault(rec, &size);
+    if (!bytes || size <= 0) {
+        CloseRecObjNoFault(rec);
+        return false;
+    }
+
+    bytes_out->resize(static_cast<size_t>(size));
+    if (!CopyBytesNoFault(bytes, bytes_out->data(), static_cast<size_t>(size))) {
+        bytes_out->clear();
+        FreeFileBufferNoFault(rec, bytes);
+        CloseRecObjNoFault(rec);
+        return false;
+    }
+
+    FreeFileBufferNoFault(rec, bytes);
+    CloseRecObjNoFault(rec);
+    return !bytes_out->empty();
+}
+
 /* ---------------- DXT decoders (software) ---------------- */
 
 std::vector<RGBA> DecodeDXT1(const uint8_t* data, int width, int height) {
@@ -1414,13 +1439,14 @@ uint32_t GWDatReader::ParseFileId(const std::wstring& texture_key) {
 }
 
 bool GWDatReader::ReadDatFile(const wchar_t* file_hash, std::vector<uint8_t>* bytes_out, uint32_t stream_id) {
-    if (!(file_hash && *file_hash && bytes_out && g_close_rec_obj_func && g_file_hash_to_rec_obj_func && g_free_file_buffer_func)) {
+    if (!(file_hash && *file_hash && bytes_out && g_close_rec_obj_func && g_file_hash_to_rec_obj_func
+        && g_read_file_buffer_func && g_free_file_buffer_func)) {
         return false;
     }
 
     const uint32_t file_id = ArenaNetFileParser::FileHashToFileId(file_hash);
     RecObj* rec = nullptr;
-    const bool has_subtype = file_hash[2] != 0;
+    const bool has_subtype = std::char_traits<wchar_t>::length(file_hash) > 2 && file_hash[2] != 0;
     if (file_id && !has_subtype && g_open_file_by_file_id_func) {
         rec = OpenFileByFileIdNoFault(0, file_id, stream_id, 1, 0);
     }
@@ -1431,24 +1457,16 @@ bool GWDatReader::ReadDatFile(const wchar_t* file_hash, std::vector<uint8_t>* by
         return false;
     }
 
-    int size = 0;
-    const auto bytes = ReadFileBufferNoFault(rec, &size);
-    if (!bytes || size <= 0) {
-        CloseRecObjNoFault(rec);
+    return ReadDatRecord(rec, bytes_out);
+}
+
+bool GWDatReader::ReadDatFileById(uint32_t file_id, std::vector<uint8_t>* bytes_out, uint32_t stream_id) {
+    if (!(file_id && bytes_out && g_open_file_by_file_id_func && g_read_file_buffer_func
+        && g_free_file_buffer_func && g_close_rec_obj_func)) {
         return false;
     }
 
-    bytes_out->resize(static_cast<size_t>(size));
-    if (!CopyBytesNoFault(bytes, bytes_out->data(), static_cast<size_t>(size))) {
-        bytes_out->clear();
-        FreeFileBufferNoFault(rec, bytes);
-        CloseRecObjNoFault(rec);
-        return false;
-    }
-
-    FreeFileBufferNoFault(rec, bytes);
-    CloseRecObjNoFault(rec);
-    return !bytes_out->empty();
+    return ReadDatRecord(OpenFileByFileIdNoFault(0, file_id, stream_id, 1, 0), bytes_out);
 }
 
 bool GWDatReader::EnsureHooks() {

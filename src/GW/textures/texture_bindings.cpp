@@ -4,6 +4,7 @@
 #include "GW/textures/texture_manager.h"
 
 #include <string>
+#include <vector>
 
 #include <windows.h>
 
@@ -71,6 +72,30 @@ PYBIND11_EMBEDDED_MODULE(PyTexture, m) {
         py::arg("dye1") = 0, py::arg("dye2") = 0, py::arg("dye3") = 0, py::arg("dye4") = 0,
         "Load a dyed/colored model texture from the GW.dat archive (base icon + dye "
         "mask blended with the client dye colors). Async, like get_texture_by_file_id.");
+
+    m.def("read_dat_file_by_hash",
+        [](const std::wstring& file_hash) -> py::object {
+            std::vector<uint8_t> bytes;
+            GW::textures::GWDatReader::Instance().EnsureHooks();
+            if (!GW::textures::GWDatReader::ReadDatFile(file_hash.c_str(), &bytes, 1)) {
+                return py::none();
+            }
+            return py::bytes(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        },
+        py::arg("file_hash"),
+        "Read a decompressed GW.dat entry by its encoded file hash, or return None on failure.");
+
+    m.def("read_dat_file_by_id",
+        [](uint32_t file_id, uint32_t stream_id) -> py::object {
+            std::vector<uint8_t> bytes;
+            GW::textures::GWDatReader::Instance().EnsureHooks();
+            if (!GW::textures::GWDatReader::ReadDatFileById(file_id, &bytes, stream_id)) {
+                return py::none();
+            }
+            return py::bytes(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        },
+        py::arg("file_id"), py::arg("stream_id") = 1,
+        "Read a decompressed GW.dat entry by sequential file id, or return None on failure.");
 
     m.def("cleanup_old_textures",
         [](int timeout_seconds) {

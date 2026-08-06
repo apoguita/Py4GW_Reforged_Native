@@ -407,6 +407,7 @@ bool Initialize() {
             "PyCamera",
             "PyChat",
             "PyChatCommands",
+            "PyCtoS",
             "PyAgentEvents",
             "PyEffects",
             "PyFriendList",

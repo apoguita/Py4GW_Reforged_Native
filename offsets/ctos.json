@@ -1,0 +1,59 @@
+{
+  "namespace": "ctos",
+  "patterns": {
+    "send_wrapper": {
+      "pattern": "\\xF7\\x00\\xC7\\x47\\x54\\x01\\x00\\x00\\x00\\x1B\\x00",
+      "mask": "x?xxxxxxxx?",
+      "offset": "-0xBF",
+      "section": "text"
+    },
+    "game_server_object_ref": {
+      "pattern": "\\xC3\\xA1\\x00\\x00\\x00\\x00\\x85\\xC0\\x74\\xF1",
+      "mask": "xx????xxxx",
+      "offset": "0x2",
+      "section": "text"
+    },
+    "ctos_assert_bytes_dword": {
+      "assertion_file": "MsgConn.cpp",
+      "assertion_message": "bytes >= sizeof(dword)"
+    },
+    "ctos_assert_bytes_data": {
+      "assertion_file": "MsgConn.cpp",
+      "assertion_message": "bytes && data"
+    }
+  },
+  "resolvers": {
+    "send_target": {
+      "log_level": "error",
+      "on_fail": "continue",
+      "attempts": [
+        {
+          "name": "primary_pattern",
+          "steps": [
+            { "name": "scan_wrapper", "op": "scan", "pattern": "send_wrapper", "out": "final" }
+          ]
+        },
+        {
+          "name": "assertion_bytes_dword",
+          "steps": [
+            { "name": "scan_assertion", "op": "scan", "pattern": "ctos_assert_bytes_dword", "out": "assert_addr" },
+            { "name": "to_function_start", "op": "to_function_start", "in": "assert_addr", "out": "final" }
+          ]
+        },
+        {
+          "name": "assertion_bytes_data",
+          "steps": [
+            { "name": "scan_assertion", "op": "scan", "pattern": "ctos_assert_bytes_data", "out": "assert_addr" },
+            { "name": "to_function_start", "op": "to_function_start", "in": "assert_addr", "out": "final" }
+          ]
+        }
+      ]
+    },
+    "game_server_object": {
+      "steps": [
+        { "name": "scan_global_reference", "op": "scan", "pattern": "game_server_object_ref", "out": "final" },
+        { "name": "validate_global_reference", "op": "validate_section", "in": "final", "section": "text", "out": "final" }
+      ]
+    }
+  }
+}

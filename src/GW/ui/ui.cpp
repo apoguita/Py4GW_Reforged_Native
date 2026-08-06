@@ -715,12 +715,15 @@ bool Init() {
     try_resolve("ResolveCommandLineFunctions", &ResolveCommandLineFunctions);
 
     if (g_send_ui_message_func) {
-        // UI message dispatch has the same teardown-sensitive handle ABI as
-        // frame dispatch. Keep the resolved function for explicit calls, but
-        // do not detour the game's native message path.
-        g_send_ui_message_original = g_send_ui_message_func;
+        Logger::AssertHook(
+            "SendUIMessage_Func",
+            PY4GW::HookBase::CreateHook(
+                reinterpret_cast<void**>(&g_send_ui_message_func),
+                reinterpret_cast<void*>(&OnSendUIMessage),
+                reinterpret_cast<void**>(&g_send_ui_message_original)),
+            "ui");
     } else {
-        Logger::Instance().LogWarning("SendUIMessage_Func is unavailable; UI message calls will remain disabled.", "ui");
+        Logger::Instance().LogWarning("SendUIMessage_Func is unavailable; UI message hooks will remain disabled.", "ui");
     }
 
     // Do not detour frame-message dispatch. Its callback-array argument is
@@ -773,6 +776,9 @@ bool Init() {
 
 void EnableHooks() {
     CrashContextScope context("runtime", "ui", "enable_hooks");
+    if (g_send_ui_message_func) {
+        PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_send_ui_message_func));
+    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::EnableHooks(reinterpret_cast<void*>(g_create_ui_component_func));
     }
@@ -788,6 +794,9 @@ void EnableHooks() {
 void DisableHooks() {
     CrashContextScope context("shutdown", "ui", "disable_hooks");
     RemoveUIMessageCallback(&g_open_template_hook);
+    if (g_send_ui_message_func) {
+        PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_send_ui_message_func));
+    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::DisableHooks(reinterpret_cast<void*>(g_create_ui_component_func));
     }
@@ -809,6 +818,9 @@ void Exit() {
         ::LeaveCriticalSection(&g_callback_mutex);
     }
 
+    if (g_send_ui_message_func) {
+        PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_send_ui_message_func));
+    }
     if (g_create_ui_component_func) {
         PY4GW::HookBase::RemoveHook(reinterpret_cast<void*>(g_create_ui_component_func));
     }

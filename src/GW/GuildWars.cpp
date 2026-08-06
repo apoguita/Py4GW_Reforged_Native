@@ -12,6 +12,7 @@
 #include "GW/chat/chat.h"
 #include "GW/chat_commands/chat_commands.h"
 #include "GW/context/context.h"
+#include "GW/ctos/ctos.h"
 #include "GW/dialog/dialog.h"
 #include "GW/effects/effects.h"
 #include "GW/events/events.h"
@@ -52,8 +53,9 @@ bool ScanMemoryManager() {
 void ShutdownMemoryManager() {
 }
 
-constexpr std::array<InitStep, 28> kInitSteps = {{
+constexpr std::array<InitStep, 29> kInitSteps = {{
     {"game_thread", "initialize", &GW::game_thread::Initialize, &GW::game_thread::Shutdown},
+    {"ctos", "initialize", &GW::CToS::Initialize, &GW::CToS::Shutdown},
     {"stoc", "initialize", &GW::StoC::Initialize, &GW::StoC::Shutdown},
     {"render", "initialize", &GW::render::Initialize, &GW::render::Shutdown},
     {"ui", "initialize", &GW::ui::Initialize, &GW::ui::Shutdown},
