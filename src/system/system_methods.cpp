@@ -10,6 +10,7 @@
 #include "GW/context/pregame.h"
 #include "GW/map/map.h"
 #include "GW/ui/ui.h"
+#include "settings/settings.h"
 #include "virtual_input/virtual_input.h"
 
 #include <algorithm>
@@ -192,32 +193,54 @@ void System::UpdateAccountAnchor() {
 
     if (GW::map::GetIsMapLoaded()) {
         const GW::Context::CharContext* char_context = GW::Context::GetCharContext();
-        if (!char_context || !char_context->player_email[0]) {
-            return;
-        }
-
-        std::string email;
-        for (const wchar_t ch : char_context->player_email) {
-            if (!ch) {
-                break;
+        if (char_context && char_context->player_email[0]) {
+            std::string email;
+            for (const wchar_t ch : char_context->player_email) {
+                if (!ch) {
+                    break;
+                }
+                email.push_back(ch > 0 && ch <= 0x7f ? static_cast<char>(ch) : '?');
             }
-            email.push_back(ch > 0 && ch <= 0x7f ? static_cast<char>(ch) : '?');
+            if (!email.empty()) {
+                {
+                    std::lock_guard<std::mutex> lock(account_mutex_);
+                    account_email_ = email;
+                }
+                account_email_set_.store(true);
+
+                std::error_code ec;
+                std::filesystem::create_directories(GetSettingsDirectory(), ec);
+                WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready: " + email);
+                return;
+            }
         }
-        if (email.empty()) {
+
+        ++account_email_lookup_attempts_;
+        if (account_email_lookup_attempts_ < 2) {
             return;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(account_mutex_);
-            account_email_ = email;
-        }
-        account_email_set_.store(true);
+        auto& root_ini = SettingsManager::Instance().OpenPy4GWIni();
+        if (root_ini.IsBound()) {
+            const std::string anchor = root_ini.GetString("settings", "account_anchor", "");
+            if (!anchor.empty()) {
+                {
+                    std::lock_guard<std::mutex> lock(account_mutex_);
+                    account_email_ = anchor;
+                }
+                account_email_set_.store(true);
 
-        std::error_code ec;
-        std::filesystem::create_directories(GetSettingsDirectory(), ec);
-        WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready: " + email);
-        return;
+                std::error_code ec;
+                std::filesystem::create_directories(GetSettingsDirectory(), ec);
+                WriteConsoleMessage("Py4GW", MessageType::Notice, "Account anchor ready (ini): " + anchor);
+                return;
+            }
+        }
+
+        PY4GW_PANIC("Account anchor resolution failed after two map-loaded email attempts; Py4GW.ini [settings] account_anchor is required.");
     }
+
+    account_email_lookup_attempts_ = 0;
 
     // Not in a map yet: if we sit in character select, push Enter to log the
     // selected character in, retrying until the map starts loading.

@@ -108,6 +108,7 @@ private:
     mutable std::mutex account_mutex_;
     std::string account_email_;
     std::atomic<bool> account_email_set_{false};
+    uint8_t account_email_lookup_attempts_ = 0;
     uint64_t last_enter_push_tick_ = 0;
 };
 
