@@ -138,7 +138,7 @@ bool InitializeStoC() {
                 entry.direction = PacketDirection::StoC;
                 entry.header = pak->header;
 
-                const uint32_t packet_size = GW::StoC::GetPacketSize(pak->header);
+                const uint32_t packet_size = GW::StoC::GetPacketSize(pak->header, pak);
                 const uint32_t copy_size = std::min<uint32_t>(packet_size, static_cast<uint32_t>(kMaxStoCPacketBuffer));
                 const uint32_t copied = SafeCopyStoCPacket(pak, copy_size, entry.data);
                 entry.size = packet_size ? packet_size : copied;

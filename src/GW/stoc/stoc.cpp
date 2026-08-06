@@ -17,7 +17,7 @@ using StoCHandlerFn = bool(__cdecl*)(Packet::StoC::PacketBase* packet);
 
 struct StoCHandler {
     uint32_t* packet_template = nullptr;
-    uint32_t template_size = 0;
+    uint32_t field_count = 0;  // number of uint32_t descriptors in packet_template, NOT a byte size
     StoCHandlerFn handler_func = nullptr;
 };
 
