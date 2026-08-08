@@ -7,6 +7,7 @@ namespace GW::effects {
 	void Shutdown();
 
 	uint32_t GetAlcoholLevel();
+	uint32_t GetAlcoholTimeRemaining();
 	void GetDrunkAf(uint32_t intensity, uint32_t tint);
 
 	Context::AgentEffects* GetAgentEffectsArray(uint32_t agent_id);

@@ -38,6 +38,10 @@ PYBIND11_EMBEDDED_MODULE(PyEffects, m) {
         return GW::effects::GetAlcoholLevel();
     });
 
+    m.def("get_alcohol_time_remaining", []() -> uint32_t {
+        return GW::effects::GetAlcoholTimeRemaining();
+    });
+
     m.def("get_drunk_af", [](uint32_t intensity, uint32_t tint) {
         GW::effects::GetDrunkAf(intensity, tint);
     }, py::arg("intensity"), py::arg("tint"));
@@ -179,6 +183,7 @@ PYBIND11_EMBEDDED_MODULE(PyEffects, m) {
         }, py::arg("skill_id"))
         .def("DropBuff", [](const PyEffectsWrapper&, uint32_t buff_id) { GW::effects::DropBuff(buff_id); }, py::arg("skill_id"))
         .def_static("GetAlcoholLevel", []() -> uint32_t { return GW::effects::GetAlcoholLevel(); })
+        .def_static("GetAlcoholTimeRemaining", []() -> uint32_t { return GW::effects::GetAlcoholTimeRemaining(); })
         .def_static("ApplyDrunkEffect", [](uint32_t intensity, uint32_t tint) { GW::effects::GetDrunkAf(intensity, tint); },
              py::arg("intensity") = 0, py::arg("tint") = 0);
 }
