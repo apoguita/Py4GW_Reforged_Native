@@ -8,7 +8,12 @@
 #include "base/patterns.h"
 #include "base/scanner.h"
 
+#include "GW/player/player.h"
+
 #include <atomic>
+#include <chrono>
+#include <mutex>
+#include <sstream>
 
 namespace GW::effects {
 
@@ -27,11 +32,97 @@ PostProcessEffectFn g_post_process_effect_func = nullptr;
 PostProcessEffectFn g_post_process_effect_original = nullptr;
 DropBuffFn g_drop_buff_func = nullptr;
 std::atomic<uint32_t> g_alcohol_level = 0;
+std::mutex g_alcohol_timer_mutex;
+uint64_t g_alcohol_expires_at_ms = 0;
+uint32_t g_prev_packet_tint_6_level = 0;
+uint32_t g_prev_alcohol_title_points = 0;
+bool g_alcohol_title_points_initialized = false;
 std::atomic<bool> g_initialized = false;
+
+namespace {
+
+uint64_t SteadyNowMs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+uint32_t GetAlcoholTitlePoints() {
+    const auto* title = GW::player::GetTitleTrack(GW::Constants::TitleID::Drunkard);
+    return title ? title->current_points : 0;
+}
+
+}  // namespace
 
 void __cdecl OnPostProcessEffect(uint32_t intensity, uint32_t tint) {
     PY4GW::HookBase::EnterHook();
-    g_alcohol_level = intensity;
+
+    const uint64_t now_ms = SteadyNowMs();
+    const uint32_t current_title_points = GetAlcoholTitlePoints();
+    uint32_t title_points_gained = 0;
+    uint32_t old_level = 0;
+    uint64_t remaining_before_ms = 0;
+    uint64_t remaining_after_ms = 0;
+    const char* action = "reset";
+
+    {
+        std::lock_guard<std::mutex> lock(g_alcohol_timer_mutex);
+        if (!g_alcohol_title_points_initialized) {
+            g_prev_alcohol_title_points = current_title_points;
+            g_alcohol_title_points_initialized = true;
+        }
+        else if (current_title_points > g_prev_alcohol_title_points) {
+            title_points_gained = current_title_points - g_prev_alcohol_title_points;
+        }
+        g_prev_alcohol_title_points = current_title_points;
+
+        old_level = g_alcohol_level.load();
+        remaining_before_ms = g_alcohol_expires_at_ms > now_ms
+            ? g_alcohol_expires_at_ms - now_ms
+            : 0;
+
+        bool ignore_event = false;
+        if (tint == 8 && intensity == 5) {
+            action = "ignored_pahnai_salad";
+            ignore_event = true;
+        }
+        else if (tint == 6) {
+            if (intensity == 5 &&
+                (g_prev_packet_tint_6_level < intensity - 1 ||
+                 (g_prev_packet_tint_6_level == 5 && title_points_gained < 1))) {
+                action = "ignored_lunar_effect";
+                ignore_event = true;
+            }
+            g_prev_packet_tint_6_level = intensity;
+        }
+
+        if (!ignore_event) {
+            if (intensity > old_level) {
+                remaining_after_ms = remaining_before_ms +
+                    (static_cast<uint64_t>(intensity - old_level) * 60000ULL);
+                action = old_level == 0 ? "started" : "level_increase";
+            }
+            else {
+                remaining_after_ms = static_cast<uint64_t>(intensity) * 60000ULL;
+                action = intensity == old_level && intensity > 0 ? "same_level_topoff" : "reset";
+            }
+
+            g_alcohol_expires_at_ms = now_ms + remaining_after_ms;
+            g_alcohol_level = intensity;
+        }
+        else {
+            remaining_after_ms = remaining_before_ms;
+        }
+    }
+
+    std::ostringstream diagnostic;
+    diagnostic << "event intensity=" << intensity
+               << " tint=" << tint
+               << " old_level=" << old_level
+               << " title_points_gained=" << title_points_gained
+               << " remaining_before_ms=" << remaining_before_ms
+               << " remaining_after_ms=" << remaining_after_ms
+               << " action=" << action;
+    Logger::Instance().WriteFileLine("effects.alcohol", "DEBUG", diagnostic.str());
 
     if (g_post_process_effect_original) {
         g_post_process_effect_original(intensity, tint);
@@ -79,6 +170,13 @@ void Exit() {
     g_post_process_effect_original = nullptr;
     g_drop_buff_func = nullptr;
     g_alcohol_level = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_alcohol_timer_mutex);
+        g_alcohol_expires_at_ms = 0;
+        g_prev_packet_tint_6_level = 0;
+        g_prev_alcohol_title_points = 0;
+        g_alcohol_title_points_initialized = false;
+    }
 }
 
 bool Initialize() {
