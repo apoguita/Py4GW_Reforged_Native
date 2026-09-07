@@ -62,6 +62,15 @@ bool FileScanner::CreateFromPath(const wchar_t* path, FileScanner* result)
         return false;
     }
 
+    LARGE_INTEGER onDiskSize;
+    if (!GetFileSizeEx(hFile, &onDiskSize)) {
+        Logger::Instance().LogError("GetFileSizeEx failed, err: " + std::to_string(GetLastError()));
+        CloseHandle(hFile);
+        return false;
+    }
+
+    size_t FileSize = static_cast<size_t>(onDiskSize.QuadPart);
+
     HANDLE hFileMapping = CreateFileMappingW(
         hFile,
         NULL,
@@ -86,13 +95,6 @@ bool FileScanner::CreateFromPath(const wchar_t* path, FileScanner* result)
         return return_free(false, FileContent);
     }
 
-    MEMORY_BASIC_INFORMATION BasicInfo;
-    if (VirtualQuery(FileContent, &BasicInfo, sizeof(BasicInfo)) != sizeof(BasicInfo)) {
-        Logger::Instance().LogError("VirtualQuery failed: " + std::to_string(GetLastError()));
-        return return_free(false, FileContent);
-    }
-
-    size_t FileSize = BasicInfo.RegionSize;
     const uint8_t* FileBytes = (const uint8_t*)FileContent;
 
     IMAGE_DOS_HEADER DosHeader;
@@ -152,10 +154,11 @@ bool FileScanner::CreateFromPath(const wchar_t* path, FileScanner* result)
     }
 
     PIMAGE_SECTION_HEADER Sections = IMAGE_FIRST_SECTION((PIMAGE_NT_HEADERS32)(FileBytes + DosHeader.e_lfanew));
+    size_t ImageSize = OptHeader.SizeOfImage;
     WORD SectionIdx;
     for (SectionIdx = 0; SectionIdx < PeHeader.FileHeader.NumberOfSections; ++SectionIdx) {
         PIMAGE_SECTION_HEADER Section = &Sections[SectionIdx];
-        if ((FileSize < Sections->VirtualAddress) || ((FileSize - Sections->VirtualAddress) < Sections->Misc.VirtualSize)) {
+        if ((ImageSize < Section->VirtualAddress) || ((ImageSize - Section->VirtualAddress) < Section->Misc.VirtualSize)) {
             Logger::Instance().LogError("Not enough bytes for a section");
             return return_free(false, FileContent);
         }
