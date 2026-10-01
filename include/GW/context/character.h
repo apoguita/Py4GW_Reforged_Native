@@ -23,7 +23,7 @@ namespace GW::Context {
     };
     static_assert(sizeof(CharProgressBar) == 0x2C, "CharProgressBar size mismatch");
 
-    struct CharContext { // total: 0x448
+    struct CharContext { // total: 0x458
         /* +h0000 */ GW::GWArray<void*> h0000;
         /* +h0010 */ uint32_t h0010;
         /* +h0014 */ GW::GWArray<void*> h0014;
@@ -43,21 +43,25 @@ namespace GW::Context {
         /* +h01A0 */ uint8_t host[0x18];
         /* +h01B8 */ uint32_t token2; // player id
         /* +h01BC */ uint32_t h01BC[27];
-        /* +h0228 */ int32_t district_number;
-        /* +h022C */ GW::Constants::Language language;
-        /* +h0230 */ GW::Constants::MapID observe_map_id;
-        /* +h0234 */ GW::Constants::MapID current_map_id;
-        /* +h0238 */ GW::Constants::InstanceType observe_map_type;
-        /* +h023C */ GW::Constants::InstanceType current_map_type;
-        /* +h0240 */ uint32_t h0240[5];
-        /* +h0254 */ GW::GWArray<ObserverMatch*> observer_matches;
-        /* +h0264 */ uint32_t h0264[17];
-        /* +h02A8 */ uint32_t player_flags; // bitwise something
-        /* +h02AC */ uint32_t player_number;
-        /* +h02B0 */ uint32_t h02B0[40];
-        /* +h0350 */ CharProgressBar* progress_bar; // seems to never be nullptr
-        /* +h0354 */ uint32_t h0354[29];
-        /* +h03C8 */ wchar_t player_email[0x40];
+        /* +h0228 */ uint32_t h0228;
+        /* +h022C */ int32_t district_number;
+        /* +h0230 */ GW::Constants::Language language;
+        /* +h0234 */ GW::Constants::MapID observe_map_id;
+        /* +h0238 */ GW::Constants::MapID current_map_id;
+        /* +h023C */ GW::Constants::InstanceType observe_map_type;
+        /* +h0240 */ GW::Constants::InstanceType current_map_type;
+        /* +h0244 */ uint32_t h0244[5];
+        /* +h0258 */ GW::GWArray<ObserverMatch*> observer_matches;
+        /* +h0268 */ uint32_t h0268[17];
+        /* +h02AC */ uint32_t player_flags; // bitwise something
+        /* +h02B0 */ uint32_t player_number;
+        /* +h02B4 */ uint32_t h02B4[43];
+        /* +h0360 */ CharProgressBar* progress_bar; // seems to never be nullptr
+        /* +h0364 */ uint32_t h0364[29];
+        /* +h03D8 */ wchar_t player_email[0x40];
     };
-    static_assert(sizeof(CharContext) == 0x448, "struct CharContext has incorrect size");
+    static_assert(offsetof(CharContext, district_number) == 0x22C, "CharContext district offset mismatch");
+    static_assert(offsetof(CharContext, progress_bar) == 0x360, "CharContext progress bar offset mismatch");
+    static_assert(offsetof(CharContext, player_email) == 0x3D8, "CharContext email offset mismatch");
+    static_assert(sizeof(CharContext) == 0x458, "struct CharContext has incorrect size");
 }

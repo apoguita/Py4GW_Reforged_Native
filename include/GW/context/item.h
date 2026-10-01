@@ -47,8 +47,10 @@ namespace GW::Context {
         uint32_t skill_point_cost;
         uint32_t material_cost_count;
         MaterialCost* material_cost_buffer; // NB: The game stores a cached array of material amounts that the player has in inventory; we don't care about it though!
+        uint32_t h0014;
     };
-    static_assert(sizeof(ItemFormula) == 0x14, "ItemFormula size mismatch");
+    static_assert(offsetof(ItemFormula, h0014) == 0x14, "ItemFormula tail offset mismatch");
+    static_assert(sizeof(ItemFormula) == 0x18, "ItemFormula size mismatch");
 
     struct Bag { // total: 0x28/40
         /* +h0000 */ GW::Constants::BagType bag_type;
