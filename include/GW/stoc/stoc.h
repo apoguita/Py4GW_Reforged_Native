@@ -21,7 +21,7 @@ namespace GW::StoC {
 bool Initialize();
 void Shutdown();
 
-constexpr uint32_t kStoCHeaderCount = 0x1e7;
+constexpr uint32_t kStoCHeaderCount = 0x1e8;
 
 using PacketCallback = PY4GW::HookCallback<Packet::StoC::PacketBase*>;
 
