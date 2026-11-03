@@ -34,6 +34,7 @@ Use these files by subject area, not by history:
 | `ui_elements_creation_recipes.md` | Per-control recipe deep-dives (root cause / recipe / fix), Ghidra-swarm-derived | Need the decompile-level "why" behind a control's recipe |
 | `ui_controls_catalog.md` | Native UI control inventory (FrameProc addresses, struct layouts, assertion strings, tiers) | Looking up a control's FrameProc/struct/assertion, or its historical status |
 | `ui_frame_system_mapping.md` | UI frame taxonomy and mapping notes | Working on frame types or frame behavior |
+| `client_build_drift_recovery.md` | Record of the 2026-11-03 client update: which UI resolvers broke, why, how the addresses were re-established, and the offline + live verification method | Recovering pointers after a `Gw.exe` update, or auditing `offsets/ui.json` |
 | `window_creation_architecture.md` | End-to-end window creation architecture notes | Working on frame/window creation internals |
 | `native_gw_window_creation_investigation.md` | Lower-level historical window-creation investigation | Need raw prior window findings |
 | `native_ui_title_and_encoded_string_reference.md` | Encoded string, title, and text handling reference | Working on encoded UI text or labels |

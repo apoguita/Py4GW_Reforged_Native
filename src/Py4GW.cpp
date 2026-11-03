@@ -387,6 +387,20 @@ bool Py4GW_Initialize() {
         return false;
     }
 
+    // Crash capture is installed here, as early as the runtime allows: it needs the scanner and
+    // the pattern catalogue for its Guild Wars anchor path (InstallPathC) and nothing else. Every
+    // step after this point - Python bring-up and all 29 GW module inits - now has a report path.
+    // This is what docs/11-error-handling-and-panic.md asks for ("Keep crash capture process-wide
+    // and initialized for as much of process lifetime as practical"), and it is required for
+    // correctness rather than convenience: GW::StoC::Initialize defers its real init onto the game
+    // thread (stoc.cpp), so a failed invariant there kills the process asynchronously, long before
+    // the end of this function. Installing the handler last meant such a death produced no report
+    // of any kind - no folder, no json, no log line. A panic before this line is still only
+    // visible in Py4GW_injection_log.txt.
+    CrashHandler::SetContext("startup", "crash_handler", "initialize");
+    Logger::Instance().LogInfo("Initializing crash handler.");
+    CrashHandler::Instance().Initialize();
+
     CrashHandler::SetContext("startup", "python_runtime", "initialize");
     Logger::Instance().LogInfo("Initializing Python runtime.");
     if (!PY4GW::python_runtime::Initialize()) {
@@ -402,6 +416,12 @@ bool Py4GW_Initialize() {
         PY4GW::python_runtime::Shutdown();
         return false;
     }
+
+    // MinHook is initialised by GW::Initialize() (every hooking module's Initialize calls
+    // HookBase::Initialize -> MH_Initialize), so Path C - the Guild Wars crash-handler detour -
+    // can only be installed now. Installing it from CrashHandler::Initialize() made MH_CreateHook
+    // fail and quietly reduced crash capture to SEH/VEH only.
+    CrashHandler::Instance().InstallGuildWarsPath();
 
     CrashHandler::SetContext("startup", "listeners", "initialize");
     PY4GW::listeners::Initialize();
@@ -431,9 +451,6 @@ bool Py4GW_Initialize() {
         }
     }
 
-    CrashHandler::SetContext("startup", "crash_handler", "initialize");
-    Logger::Instance().LogInfo("Initializing crash handler.");
-    CrashHandler::Instance().Initialize();
     CrashHandler::SetContext("runtime", "bootstrap", "initialized");
 
     PY4GW::imgui::SetShutdownCallback(&BeginShutdown);

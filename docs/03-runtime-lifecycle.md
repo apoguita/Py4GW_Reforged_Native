@@ -48,13 +48,23 @@ The mutex serializes initialize/shutdown transitions. There is no broader fine-g
 4. Clear the shutdown-request flag
 5. Initialize `Scanner`
 6. Initialize `Patterns`
-7. Initialize the embedded Python runtime
-8. Initialize the Guild Wars runtime layer
-9. Initialize the crash handler
+7. Initialize the crash handler
+8. Initialize the embedded Python runtime
+9. Initialize the Guild Wars runtime layer
 10. Register ImGui shutdown callback
 11. Register Guild Wars render/reset callbacks
 12. Mark the runtime as running
 13. Log success
+
+The crash handler is installed at step 7, immediately after `Patterns`. It needs the scanner and
+the pattern catalogue for its Guild Wars anchor path (`InstallPathC`) and nothing else, so this is
+the earliest point it can be installed. It used to be installed after step 9, which meant a failure
+during Python bring-up or any GW module init produced no crash report of any kind, not even an
+injection-log line. That mattered in practice: `GW::StoC::Initialize` defers its real init onto the
+game thread (`stoc.cpp`), so a failed invariant there kills the process asynchronously and takes the
+whole init sequence with it. See `11-error-handling-and-panic.md` ("Keep crash capture process-wide
+and initialized for as much of process lifetime as practical"). A panic before step 7 is still only
+visible in `Py4GW_injection_log.txt`.
 
 Failure handling:
 

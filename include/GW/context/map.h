@@ -221,7 +221,9 @@ namespace GW::Context {
         /* +h007C */ PropsContext* props;
         /* +h0080 */ uint32_t h0080;
         /* +h0084 */ void* terrain;
-        /* +h0088 */ uint32_t h0088[42];
+        /* +h0088 */ uint32_t h0088;
+        /* +h008C */ GW::Constants::MapID map_id;
+        /* +h0090 */ uint32_t h0090[40];
         /* +h0130 */ void* zones;
         //... Player coords and shit beyond this point if they are desirable :p
     };
@@ -250,6 +252,7 @@ namespace GW::Context {
     static_assert(offsetof(MapContext, sub1) == 0x74, "MapContext::sub1 offset mismatch");
     static_assert(offsetof(MapContext, props) == 0x7C, "MapContext::props offset mismatch");
     static_assert(offsetof(MapContext, terrain) == 0x84, "MapContext::terrain offset mismatch");
+    static_assert(offsetof(MapContext, map_id) == 0x8C, "MapContext::map_id offset mismatch");
     static_assert(offsetof(MapContext, zones) == 0x130, "MapContext::zones offset mismatch");
 
     GW::Constants::ServerRegion* GetRegionIdPtr();

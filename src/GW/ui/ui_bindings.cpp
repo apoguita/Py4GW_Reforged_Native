@@ -1,9 +1,11 @@
 #include "base/py_bindings.h"
 
 #include "GW/ui/ui.h"
+#include "GW/ui/native_dialog_host.h"
 
 #include "GW/game_thread/game_thread.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1634,5 +1636,129 @@ PYBIND11_EMBEDDED_MODULE(PyUIManager, m) {
             auto* scrollable = FrameAs<GW::ui::ScrollableFrame>(frame_id);
             Frame* page = scrollable ? scrollable->GetPage() : nullptr;
             return page ? page->frame_id : 0;
-        }, py::arg("frame_id"));
+        }, py::arg("frame_id"))
+
+        // ---- Native dialog host (recovered owner contract) ----
+        // Gives Py4GW the "owner" every control-hosting GW window has: a dispatcher that owns a
+        // per-frame instance and drives the CCtlLayout size pass. See
+        // docs/ui/research/native-dialog-host-owner-contract.md.
+        .def_static("dialog_host_ready", []() {
+            return GW::ui::DialogHost::Ready();
+        }, "True when every native the owning path needs resolved.")
+        .def_static("dialog_host_resolved_mask", []() {
+            return GW::ui::DialogHost::HostResolvedMask();
+        }, "Bitmask of resolved host natives; 0x1FF means all nine.")
+        .def_static("dialog_host_window_count", []() {
+            return GW::ui::DialogHost::HostWindowCount();
+        }, "Number of live native host windows.")
+        .def_static("dialog_host_last_frame_id", []() {
+            return GW::ui::DialogHost::LastHostFrameId();
+        }, "Frame id of the most recently created host window. Observable in-client: script main() "
+           "does not run on the game thread, so a create is queued and cannot return its id.")
+        .def_static("dialog_host_proc_address", []() {
+            return reinterpret_cast<uintptr_t>(&GW::ui::DialogHost::HostProc);
+        }, "Address of the host FrameProc, for driving create_ui_component_raw_by_frame_id directly.")
+        .def_static("create_dialog_host_window", [](uint32_t parent_frame_id, uint32_t component_flags, uint32_t child_index, std::wstring component_label) {
+            // Content callbacks are intentionally left empty: captions must be encoded payloads
+            // and passing a raw wide string is a documented crash source, so the first in-client
+            // step exercises ownership (instance, layout, size pass, teardown) with no content.
+            const auto build = [parent_frame_id, component_flags, child_index, component_label]() {
+                return GW::ui::DialogHost::CreateHostWindow(
+                    parent_frame_id,
+                    component_flags,
+                    child_index,
+                    component_label.empty() ? nullptr : component_label.data(),
+                    nullptr,
+                    nullptr,
+                    nullptr);
+            };
+
+            // game_thread::Enqueue runs the callback inline ONLY when g_in_game_thread is set,
+            // which is true during Py4GW's own per-frame callbacks and FALSE inside script main()
+            // (scripts run off the game thread). Measured in-client: a create from main() is
+            // therefore queued, and the return here is 0 even though the window IS created a tick
+            // later. Poll dialog_host_last_frame_id() / dialog_host_window_count() instead.
+            // A binding that captured its result by reference would additionally write through a
+            // dangling stack pointer on this path, so the storage is owned either way.
+            if (GW::game_thread::IsInGameThread()) {
+                return build();
+            }
+            auto result = std::make_shared<uint32_t>(0);
+            GW::game_thread::Enqueue([build, result]() { *result = build(); });
+            // 0 means "queued", not "failed". Observe with dialog_host_window_count() and
+            // dialog_host_last_frame_id(); reclaim with dialog_host_destroy_all().
+            return 0u;
+        }, py::arg("parent_frame_id"), py::arg("component_flags") = 0u, py::arg("child_index") = 0u,
+            py::arg("component_label") = std::wstring(),
+            "Creates a host-owned GW frame. Returns its frame id when called from the game "
+            "(i.e. inside draw()/update()); returns 0 and queues when called off-thread. "
+            "Content is intentionally empty: this exercises ownership only.")
+        .def_static("destroy_dialog_host_window", [](uint32_t frame_id) {
+            if (GW::game_thread::IsInGameThread()) {
+                return GW::ui::DialogHost::DestroyHostWindow(frame_id);
+            }
+            auto result = std::make_shared<bool>(false);
+            GW::game_thread::Enqueue([frame_id, result]() {
+                *result = GW::ui::DialogHost::DestroyHostWindow(frame_id);
+            });
+            return false;  // queued, not failed
+        }, py::arg("frame_id"), "Destroys one host window; false means queued or not found.")
+        .def_static("dialog_host_destroy_all", []() {
+            if (GW::game_thread::IsInGameThread()) {
+                return GW::ui::DialogHost::DestroyAllHostWindows();
+            }
+            auto result = std::make_shared<uint32_t>(0);
+            GW::game_thread::Enqueue([result]() {
+                *result = GW::ui::DialogHost::DestroyAllHostWindows();
+            });
+            return 0u;  // queued
+        }, "Destroys every live host window; use for cleanup after a test.")
+        .def_static("dialog_host_set_frame_rect", [](uint32_t frame_id, float x, float y, float w, float h) {
+            // Anchor-6 facade: usable for any frame, not only host windows. Queued like every other
+            // game-thread call, so a False return means "not applied synchronously", not "failed".
+            if (GW::game_thread::IsInGameThread()) {
+                return GW::ui::DialogHost::SetFrameRect(frame_id, x, y, w, h);
+            }
+            auto result = std::make_shared<bool>(false);
+            GW::game_thread::Enqueue([frame_id, x, y, w, h, result]() {
+                *result = GW::ui::DialogHost::SetFrameRect(frame_id, x, y, w, h);
+            });
+            return false;  // queued
+        }, py::arg("frame_id"), py::arg("x"), py::arg("y"), py::arg("width"), py::arg("height"),
+            "Sets a frame rect through the anchor-6 setter, which survives the parent's layout pass "
+            "(a plain FrameSetSize is reset to 0x0, leaving the frame invisible).")
+        .def_static("create_owned_window", [](uint32_t parent_frame_id, float x, float y, float w, float h, uint32_t style, std::wstring title) {
+            // The window-level entry point: an owned frame (instance + layout + size pass) with a
+            // real rect. `style` MUST carry 0x40000 (background template) — 0x300 alone makes the
+            // paint pass early-return, which is why earlier attempts drew nothing.
+            if (GW::game_thread::IsInGameThread()) {
+                return GW::ui::DialogHost::CreateOwnedWindow(
+                    parent_frame_id, x, y, w, h, style, title.empty() ? nullptr : title.data());
+            }
+            auto result = std::make_shared<uint32_t>(0);
+            GW::game_thread::Enqueue([parent_frame_id, x, y, w, h, style, title, result]() mutable {
+                *result = GW::ui::DialogHost::CreateOwnedWindow(
+                    parent_frame_id, x, y, w, h, style, title.empty() ? nullptr : title.data());
+            });
+            return 0u;  // queued; poll dialog_host_last_frame_id()
+        }, py::arg("parent_frame_id"), py::arg("x"), py::arg("y"), py::arg("width"), py::arg("height"),
+            py::arg("style") = 0x254000u, py::arg("title") = std::wstring(),
+            "Creates an owned in-game window with the window style (0x254000 = the engine's own "
+            "confirmation-dialog style, which includes the 0x40000 background-template bit).")
+        .def_static("dialog_host_attach_chrome", [](uint32_t frame_id, uintptr_t subclass_descriptor, uint32_t msg_id) {
+            // The descriptor is build-specific. Resolve it for the RUNNING client; the June-era
+            // 0x851180 in older notes is from a different build and will be wrong here.
+            if (GW::game_thread::IsInGameThread()) {
+                return GW::ui::DialogHost::AttachFrameSubclass(
+                    frame_id, reinterpret_cast<void*>(subclass_descriptor), msg_id);
+            }
+            auto result = std::make_shared<bool>(false);
+            GW::game_thread::Enqueue([frame_id, subclass_descriptor, msg_id, result]() {
+                *result = GW::ui::DialogHost::AttachFrameSubclass(
+                    frame_id, reinterpret_cast<void*>(subclass_descriptor), msg_id);
+            });
+            return false;  // queued
+        }, py::arg("frame_id"), py::arg("subclass_descriptor"), py::arg("msg_id") = 0u,
+            "Layers a subclass descriptor onto a frame (window chrome). Never hardcode the "
+            "descriptor: it is build-specific.");
 }

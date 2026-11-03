@@ -2,6 +2,8 @@
 
 #include "GW/ui/ui.h"
 
+#include "GW/ui/native_dialog_host.h"
+
 #include "base/CrashHandler.h"
 #include "base/hooker.h"
 #include "base/logger.h"
@@ -718,6 +720,7 @@ bool Init() {
     try_resolve("ResolvePreferenceReaders", &ResolvePreferenceReaders);
     try_resolve("ResolvePreferenceWriters", &ResolvePreferenceWriters);
     try_resolve("ResolveCommandLineFunctions", &ResolveCommandLineFunctions);
+    try_resolve("ResolveDialogHostNatives", &DialogHost::ResolveDialogHostNatives);
 
     if (g_send_ui_message_func) {
         Logger::AssertHook(

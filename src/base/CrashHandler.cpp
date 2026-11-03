@@ -434,8 +434,17 @@ void CrashHandler::Initialize() {
     PY4GW::RegisterPanicHandler(&CrashHandler::OnPanic, this);
     s_vectored_handler = ::AddVectoredExceptionHandler(1, &CrashHandler::VectoredHandler);
     InstallPathA();
-    InstallPathC();
+    // Path C is deliberately NOT installed here. It hooks through MinHook, and MH_Initialize()
+    // only runs inside GW::Initialize() (see InstallGuildWarsPath); installing it this early made
+    // MH_CreateHook fail and silently left crash capture at SEH/VEH only.
     Logger::Instance().LogInfo("[CrashHandler] installed.");
+}
+
+void CrashHandler::InstallGuildWarsPath() {
+    if (!s_installed || s_append_stack_fn) {
+        return;
+    }
+    InstallPathC();
 }
 
 void CrashHandler::Terminate() {

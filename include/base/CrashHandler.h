@@ -35,6 +35,14 @@ public:
     static void RestoreContext(const CrashContextSnapshot& snapshot);
 
     void Initialize();
+    // Install Path C (the Guild Wars stack-append detour) on its own.
+    //
+    // Initialize() deliberately does NOT do this: it wants MinHook ready, and MH_Initialize()
+    // is only ever called from inside GW::Initialize() (game_thread.cpp and every other hooking
+    // module), which runs after the crash handler on purpose. Installing Path C early makes
+    // MH_CreateHook fail and silently downgrades crash capture to SEH/VEH only. The runtime calls
+    // this once GW::Initialize() has succeeded. Safe to call more than once.
+    void InstallGuildWarsPath();
     void Terminate();
     // Flag that shutdown has begun so no crash reports are written for expected
     // teardown-order faults (the handler stays installed until Terminate()).
