@@ -64,4 +64,11 @@ bool ResolveCallTargetFunction() {
     return PY4GW::Patterns::Resolve("agent.call_target_func", &g_call_target_func);
 }
 
+bool ResolveAgentStatusObjectFunction() {
+    CrashContextScope context("startup", "agent", "resolve_agent_status_object");
+    return PY4GW::Patterns::Resolve(
+        "agent.get_agent_status_object_func",
+        &g_get_agent_status_object);
+}
+
 }  // namespace GW::agent

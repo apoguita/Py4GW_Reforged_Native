@@ -14,6 +14,11 @@
 #include "GW/player/player.h"
 #include "GW/ui/ui.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstring>
+
 namespace GW::agent {
     using SendDialogFn = void(__cdecl*)(uint32_t dialog_id);
     using ChangeTargetFn = void(__cdecl*)(uint32_t agent_id, uint32_t auto_target_id);
@@ -128,6 +133,31 @@ namespace GW::agent {
         return npcs && npc_id < npcs->size() ? &npcs->at(npc_id) : nullptr;
     }
 
+    float GetOvercast(uint32_t agent_id) {
+        if (!g_get_agent_status_object || !agent_id) {
+            return 0.0f;
+        }
+
+        __try {
+            const auto* status = static_cast<const std::byte*>(g_get_agent_status_object(agent_id));
+            if (!status) {
+                return 0.0f;
+            }
+
+            float low_max_target = 0.0f;
+            uint32_t absolute_max = 0;
+            std::memcpy(&low_max_target, status + 0x11c, sizeof(low_max_target));
+            std::memcpy(&absolute_max, status + 0x124, sizeof(absolute_max));
+            if (!absolute_max || !std::isfinite(low_max_target)) {
+                return 0.0f;
+            }
+            return static_cast<float>(absolute_max) *
+                (1.0f - std::clamp(low_max_target, 0.0f, 1.0f));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return 0.0f;
+        }
+    }
 
     bool ChangeTarget(AgentID agent_id) {
         ui::packet::kSendChangeTarget packet{ agent_id, 0 };

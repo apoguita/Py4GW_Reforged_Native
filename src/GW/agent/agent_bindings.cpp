@@ -225,4 +225,5 @@ PYBIND11_EMBEDDED_MODULE(PyAgent, m) {
     m.def("get_agent_is_targettable", [](uint32_t id) -> bool {
         auto* a = GW::agent::GetAgentByID(id); return a ? GW::agent::GetIsAgentTargettable(a) : false;
     }, py::arg("agent_id"));
+    m.def("get_overcast", &GW::agent::GetOvercast, py::arg("agent_id"));
 }

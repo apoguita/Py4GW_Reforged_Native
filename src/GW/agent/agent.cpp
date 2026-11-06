@@ -31,6 +31,7 @@ bool ResolveSendGadgetDialogFunction();
 bool ResolveMoveToFunction();
 bool ResolveDoWorldActionFunction();
 bool ResolveCallTargetFunction();
+bool ResolveAgentStatusObjectFunction();
 
 bool Init();
 void EnableHooks();
@@ -58,6 +59,7 @@ DoWorldActionFn g_do_world_action_func = nullptr;
 DoWorldActionFn g_do_world_action_original = nullptr;
 uint32_t g_dialog_agent_id = 0;
 uint32_t g_current_target_id = 0;
+GetAgentStatusObjectFn g_get_agent_status_object = nullptr;
 PY4GW::HookEntry g_ui_message_entry;
 
 const std::array<ui::UIMessage, 13> g_ui_messages_to_hook = {
@@ -199,6 +201,10 @@ bool Init() {
         return false;
     }
 
+    // Overcast is a read-only additive capability. A client-pattern miss must
+    // not disable the rest of AgentMgr; GetOvercast() fails closed to 0.
+    ResolveAgentStatusObjectFunction();
+
     const bool do_world_action_ok = Logger::AssertHook(
         "DoWorldAction_Func",
         PY4GW::HookBase::CreateHook(
@@ -301,6 +307,7 @@ void Exit() {
     g_do_world_action_original = nullptr;
     g_dialog_agent_id = 0;
     g_current_target_id = 0;
+    g_get_agent_status_object = nullptr;
 }
 
 bool Initialize() {

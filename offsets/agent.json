@@ -44,6 +44,12 @@
       "mask": "xxxxxxxxx",
       "offset": "0x0",
       "section": "text"
+    },
+    "energy_bar_reader": {
+      "pattern": "\\x55\\x8b\\xec\\x51\\x56\\x8b\\x75\\x0c\\x85\\xf6\\x75\\x14\\x68\\xfc\\x01\\x00\\x00",
+      "mask": "xxxxxxxxxxxxxxxxx",
+      "offset": "0x0",
+      "section": "text"
     }
   },
   "resolvers": {
@@ -97,6 +103,15 @@
       "steps": [
         { "name": "scan_sender", "op": "scan", "pattern": "call_target_sender", "out": "scan" },
         { "name": "to_function_start", "op": "to_function_start", "in": "scan", "out": "final" }
+      ]
+    },
+    "get_agent_status_object_func": {
+      "log_level": "warning",
+      "on_fail": "continue",
+      "steps": [
+        { "name": "scan_energy_reader", "op": "scan", "pattern": "energy_bar_reader", "out": "reader" },
+        { "name": "select_status_callsite", "op": "add", "in": "reader", "value": "0x23", "out": "callsite" },
+        { "name": "resolve_status_getter", "op": "function_from_near_call", "in": "callsite", "out": "final" }
       ]
     }
   }

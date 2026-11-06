@@ -10,6 +10,10 @@
 
 namespace GW::agent {
 
+    using GetAgentStatusObjectFn = void*(__cdecl*)(uint32_t agent_id);
+
+    extern GetAgentStatusObjectFn g_get_agent_status_object;
+
     using Agent = Context::Agent;
     using AgentArray = Context::AgentArray;
     using AgentGadget = Context::AgentGadget;
@@ -48,6 +52,7 @@ namespace GW::agent {
 
     MapAgent* GetMapAgentByID(uint32_t agent_id);
     NPC* GetNPCByID(uint32_t npc_id);
+    float GetOvercast(uint32_t agent_id);
 
     bool ChangeTarget(const Agent* agent);
     bool ChangeTarget(AgentID agent_id);
