@@ -112,9 +112,10 @@ void RemovePostCallback(uint32_t header, PY4GW::HookEntry* entry) {
 namespace {
 
 // Field kinds as encoded in each packet_template uint32_t descriptor:
-// bits 0-3 = type, bits 4-7 = size, bits 8-23 = count. Mirrors GWCA's
-// PacketLogger field decoding (Examples/PacketLogger/main.cpp: GetField),
-// which is the authoritative reference for this format.
+// bits 0-3 = type, bits 4-7 = size, bits 8-23 = count. Follows GWCA's
+// PacketLogger field decoding (Examples/PacketLogger/main.cpp: GetField)
+// except for arrays (type 11), where the live client disagrees with it; see
+// DecodeFieldKind and kArrayCountBytes below.
 enum class FieldKind : uint32_t {
     AgentId,
     Float,
@@ -151,10 +152,17 @@ FieldKind DecodeFieldKind(uint32_t descriptor) {
         case 7:
             return FieldKind::String16;
         case 11:
+            // For arrays the size nibble is the log2 of the element size
+            // (0, 1, 2), not the element's byte size (1, 2, 4) as GWCA's
+            // PacketLogger reads it. Measured on the live client: with the
+            // byte-size reading the byte-array messages 0x00B5, 0x0104 and
+            // 0x0197 fell through to Unknown and sized as a bare 4-byte
+            // header, and the dword arrays of 0x008A and 0x00DB were taken
+            // for word arrays and sized at half their width.
             switch (size) {
-                case 1: return FieldKind::Array8;
-                case 2: return FieldKind::Array16;
-                case 4: return FieldKind::Array32;
+                case 0: return FieldKind::Array8;
+                case 1: return FieldKind::Array16;
+                case 2: return FieldKind::Array32;
                 default: return FieldKind::Unknown;
             }
         case 12:
@@ -171,11 +179,17 @@ FieldKind DecodeFieldKind(uint32_t descriptor) {
 constexpr uint32_t kMaxComputedPacketBytes = 8192;
 constexpr uint32_t kMaxNestedRepeatCount = 4096;
 
+// An array in the client's packet struct is a uint32_t element count followed
+// by room for the template's `count` elements. 0x00B5 is
+// {u32 header; u32 count; u8 data[0x100]} = 264 bytes, and a live 0x00DB
+// opens `db000000 0e000000`: the header, then fourteen, then the elements.
+constexpr uint32_t kArrayCountBytes = 4;
+
 // Walks `field_count` template field descriptors against the live packet
 // bytes starting at `base + *offset`, advancing *offset by what each field
 // actually occupies on the wire. Fixed-width fields (AgentId/Float/Vect2/
-// Vect3/Fixed4) and template-sized regions (Blob/String16/Array8/16/32) are
-// resolved from the descriptor alone; a trailing NestedStruct's repeat count
+// Vect3/Fixed4) and template-sized regions (Blob/String16, and Array8/16/32
+// with their leading count word) are resolved from the descriptor alone; a trailing NestedStruct's repeat count
 // is packet data (not template data), so this reads live bytes at *offset
 // and must only be called from inside the SEH guard installed by the caller.
 bool WalkFields(const uint32_t* fields, uint32_t field_count, const uint8_t* base, uint32_t* offset) {
@@ -196,15 +210,19 @@ bool WalkFields(const uint32_t* fields, uint32_t field_count, const uint8_t* bas
                 *offset += 12;
                 break;
             case FieldKind::Blob:
-            case FieldKind::Array8:
                 *offset += count;
                 break;
             case FieldKind::String16:
-            case FieldKind::Array16:
                 *offset += count * 2;
                 break;
+            case FieldKind::Array8:
+                *offset += kArrayCountBytes + count;
+                break;
+            case FieldKind::Array16:
+                *offset += kArrayCountBytes + count * 2;
+                break;
             case FieldKind::Array32:
-                *offset += count * 4;
+                *offset += kArrayCountBytes + count * 4;
                 break;
             case FieldKind::Ignore:
             case FieldKind::Unknown:
